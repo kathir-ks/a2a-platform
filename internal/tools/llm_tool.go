@@ -5,7 +5,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
-
+	"encoding/json"
+	
 	"github.com/kathir-ks/a2a-platform/internal/llmclient" // LLM Client interface
 	"github.com/kathir-ks/a2a-platform/internal/models"
 	log "github.com/sirupsen/logrus"
@@ -172,20 +173,25 @@ func (t *LLMTool) Execute(ctx context.Context, params map[string]any) (result ma
 
 	// Determine client and model
 	providerName := t.defaultProvider
-	modelName := t.defaultModel
-	if llmParams.Model != "" {
-		p, m, ok := strings.Cut(llmParams.Model, ":")
-		if !ok || p == "" || m == "" {
-			return nil, fmt.Errorf("invalid model format '%s', expected 'provider:model'", llmParams.Model)
-		}
-		providerName = p
-		modelName = m // Update modelName based on specific request
-        llmParams.Model = m // Use just the model part for the actual API call
-	} else {
-        // If model wasn't specified in params, use the default but strip provider prefix for the call
-        _, m, _ := strings.Cut(t.defaultModel, ":")
-        llmParams.Model = m
+	modelNameForCall := ""
+    if llmParams.Model != "" { // Model specified in params (e.g., "openai:gpt-4o")
+        p, m, ok := strings.Cut(llmParams.Model, ":")
+        if !ok || p == "" || m == "" {
+            return nil, fmt.Errorf("invalid model format '%s', expected 'provider:model'", llmParams.Model)
+        }
+        providerName = p     // Use specified provider
+        modelNameForCall = m // Use specified model name for the API call
+    } else { // Model not specified, use default
+        _ , m, ok := strings.Cut(t.defaultModel, ":") // Extract model name from default
+        if !ok {
+             // This should have been caught during tool initialization, but double-check
+             return nil, fmt.Errorf("internal error: invalid default model format '%s'", t.defaultModel)
+        }
+        modelNameForCall = m
+        // providerName remains t.defaultProvider
     }
+	
+	llmParams.Model = modelNameForCall
 
 
 	client, ok := t.clients[providerName]

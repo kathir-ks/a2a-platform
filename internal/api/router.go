@@ -13,19 +13,28 @@ import (
 type API struct {
 	platformService app.PlatformService
 	taskService     app.TaskService
+	agentService    app.AgentService // <-- ADD AgentService
+	toolService     app.ToolService
 	wsManager       ws.Manager
 	// Add other services (AgentService, ToolService) as needed
 }
 
 
 // NewRouter creates and configures the main application router.
-func NewRouter(ps app.PlatformService, ts app.TaskService, wsm ws.Manager) *mux.Router {
-	api := &API{
+func NewRouter(
+	ps app.PlatformService,
+	ts app.TaskService,
+	as app.AgentService, // Add AgentService parameter
+	tl app.ToolService,  // Add ToolService parameter
+	wsm ws.Manager,
+) *mux.Router {
+	api := &API{ // --- FIX: Initialize added fields ---
 		platformService: ps,
 		taskService:     ts,
+		agentService:    as, // <-- Initialize AgentService
+		toolService:     tl, // <-- Initialize ToolService
 		wsManager:       wsm,
-		// Initialize other services
-	}
+	} 	
 
 	router := mux.NewRouter()
 
@@ -42,8 +51,8 @@ func NewRouter(ps app.PlatformService, ts app.TaskService, wsm ws.Manager) *mux.
 
 	// WebSocket endpoint (still placeholder)
 	// Using PathPrefix allows middleware to apply to the WS route too
-	// wsSubrouter := router.PathPrefix("/ws").Subrouter()
-	// wsSubrouter.HandleFunc("", api.handleWebSocket) // Add this later
+	wsSubrouter := router.PathPrefix("/ws").Subrouter()
+	wsSubrouter.HandleFunc("", api.handleWebSocket) // Add this later
 
 	// Health check endpoint (good practice, bypasses some A2A logic)
 	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {

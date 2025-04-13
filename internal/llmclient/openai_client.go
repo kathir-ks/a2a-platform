@@ -4,6 +4,8 @@ package llmclient
 import (
 	"context"
 	"errors"
+	"time"
+	
 	// "github.com/sashabaranov/go-openai" // Example using a popular OpenAI client library
 	log "github.com/sirupsen/logrus"
 )
@@ -90,7 +92,7 @@ func (c *openAIClient) GenerateStream(ctx context.Context, params GenerationPara
         resultChan <- GenerationStreamEvent{
             IsFinal:      true,
             FinishReason: &finalReason,
-            ModelUsed:    ¶ms.Model,
+            ModelUsed:    &params.Model,
             Usage:        map[string]int{"prompt_tokens": 10, "completion_tokens": 5},
         }
     }()

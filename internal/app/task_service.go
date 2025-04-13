@@ -44,7 +44,11 @@ func (s *taskService) HandleGetTask(ctx context.Context, params a2a.TaskQueryPar
 	}
 
 	// Convert internal model to A2A type
-	taskA2A := models.TaskModelToA2A(taskModel) // Need this conversion function
+	taskA2A, convErr := models.TaskModelToA2A(taskModel) // Assign to 2 vars
+    if convErr != nil {
+		log.Errorf("Error converting task %s to A2A type: %v", taskModel.ID, convErr)
+		return nil, a2a.NewInternalError(map[string]string{"details": "failed to process task data"})
+    }
 
     // Fetch history if requested
     if params.HistoryLength != nil && *params.HistoryLength > 0 {
@@ -55,8 +59,7 @@ func (s *taskService) HandleGetTask(ctx context.Context, params a2a.TaskQueryPar
        // taskA2A.StatusHistory = history // Assuming Task A2A struct has a place for history
     }
 
-
-	return taskA2A, nil
+	return &taskA2A, nil
 }
 
 func (s *taskService) HandleCancelTask(ctx context.Context, params a2a.TaskIdParams) (*a2a.Task, *a2a.JSONRPCError) {
@@ -76,9 +79,15 @@ func (s *taskService) HandleCancelTask(ctx context.Context, params a2a.TaskIdPar
 	if !(currentState == models.TaskStateSubmitted || currentState == models.TaskStateWorking || currentState == models.TaskStateInputRequired) {
 		log.Warnf("Task %s is not in a cancelable state (%s)", params.ID, currentState)
 		// Return current task state but with error indicating non-cancelable
-		return models.TaskModelToA2A(taskModel), a2a.NewTaskNotCancelableError(params.ID)
+        taskA2A, convErr := models.TaskModelToA2A(taskModel) // Assign to 2 vars
+        if convErr != nil {
+             log.Errorf("Error converting non-cancelable task %s to A2A type: %v", taskModel.ID, convErr)
+             // Return internal error because we can't form the intended response payload
+		    return nil, a2a.NewInternalError(map[string]string{"details": "failed to process task data"})
+        }
+		return &taskA2A, a2a.NewTaskNotCancelableError(params.ID) // Return pointer
 	}
-
+	
 	// Update status to Canceled
 	now := time.Now().UTC()
 	taskModel.Status = models.TaskStatus{ // Assuming internal TaskStatus model exists
@@ -87,10 +96,14 @@ func (s *taskService) HandleCancelTask(ctx context.Context, params a2a.TaskIdPar
         // Message: Optionally add a cancellation message
     }
     // Add history record
-    if historyErr := s.AddTaskHistory(ctx, taskModel.ID, models.TaskStatusModelToA2A(taskModel.Status)); historyErr != nil {
-        log.Errorf("Failed to add cancellation history for task %s: %v", taskModel.ID, historyErr)
-        // Continue cancellation, but log the error
-    }
+    statusA2A, convErr := models.TaskStatusModelToA2A(&taskModel.Status)
+	if convErr != nil {
+		log.Errorf("Failed to convert task status for cancellation history %s: %v", taskModel.ID, convErr)
+	} else {
+		if historyErr := s.AddTaskHistory(ctx, taskModel.ID, statusA2A); historyErr != nil {
+			log.Errorf("Failed to add cancellation history for task %s: %v", taskModel.ID, historyErr)
+		}
+	}
 
 	updatedTask, err := s.repo.Update(ctx, taskModel)
 	if err != nil {
@@ -98,7 +111,13 @@ func (s *taskService) HandleCancelTask(ctx context.Context, params a2a.TaskIdPar
 		return nil, a2a.NewInternalError(map[string]string{"details": "failed to update task status"})
 	}
 
-	return models.TaskModelToA2A(updatedTask), nil
+	 taskA2A, convErr := models.TaskModelToA2A(updatedTask) // Assign to 2 vars
+    if convErr != nil {
+         log.Errorf("Error converting updated task %s to A2A type: %v", updatedTask.ID, convErr)
+		return nil, a2a.NewInternalError(map[string]string{"details": "failed to process updated task data"})
+    }
+
+	return &taskA2A, nil // Return pointer
 }
 
 func (s *taskService) HandleSetTaskPushNotification(ctx context.Context, params a2a.TaskPushNotificationConfig) (*a2a.TaskPushNotificationConfig, *a2a.JSONRPCError) {
@@ -115,7 +134,16 @@ func (s *taskService) HandleSetTaskPushNotification(ctx context.Context, params 
 	}
 
 	// Convert A2A config to internal model representation if necessary
-	configModel := models.PushNotificationConfigA2AToModel(¶ms.PushNotificationConfig) // Need conversion
+	configModel, convErr := models.PushNotificationConfigA2AToModel(&params.PushNotificationConfig) // Assign to 2 vars
+    if convErr != nil {
+        log.Errorf("Error converting push config to internal model for task %s: %v", params.ID, convErr)
+		return nil, a2a.NewInvalidParamsError(map[string]string{"details": "invalid push notification config format"}) // Invalid params error likely
+    }
+    if configModel == nil {
+        // Handle case where converter returns nil pointer without error (if possible)
+        log.Errorf("Push config conversion returned nil unexpectedly for task %s", params.ID)
+        return nil, a2a.NewInvalidParamsError(map[string]string{"details": "invalid push notification config format"})
+    }
 
 	if err := s.repo.SetPushConfig(ctx, params.ID, configModel); err != nil {
 		log.Errorf("Error setting push config for task %s: %v", params.ID, err)
@@ -123,7 +151,7 @@ func (s *taskService) HandleSetTaskPushNotification(ctx context.Context, params 
 	}
 
 	// Return the config that was set (passed in params)
-	return ¶ms, nil
+	return &params, nil
 }
 
 func (s *taskService) HandleGetTaskPushNotification(ctx context.Context, params a2a.TaskIdParams) (*a2a.TaskPushNotificationConfig, *a2a.JSONRPCError) {
@@ -156,11 +184,19 @@ func (s *taskService) HandleGetTaskPushNotification(ctx context.Context, params 
 
 
 	// Convert internal model back to A2A type
-	configA2A := models.PushNotificationConfigModelToA2A(configModel) // Need conversion
+	configA2A, convErr := models.PushNotificationConfigModelToA2A(configModel) // Assign to 2 vars
+    if convErr != nil {
+        log.Errorf("Error converting push config model to A2A for task %s: %v", params.ID, convErr)
+		return nil, a2a.NewInternalError(map[string]string{"details": "failed processing push notification config"})
+    }
+    if configA2A == nil { // Handle case where converter returns nil pointer without error
+         log.Errorf("Push config conversion to A2A returned nil unexpectedly for task %s", params.ID)
+         return nil, a2a.NewInternalError(map[string]string{"details": "internal error processing push config"})
+    }
 
 	return &a2a.TaskPushNotificationConfig{
 		ID:                     params.ID,
-		PushNotificationConfig: *configA2A,
+		PushNotificationConfig: *configA2A, // Dereference pointer here
 	}, nil
 }
 
@@ -180,12 +216,18 @@ func (s *taskService) GetTaskByID(ctx context.Context, taskID string) (*models.T
 
 func (s *taskService) CreateTask(ctx context.Context, taskData *models.Task) (*models.Task, *a2a.JSONRPCError) {
     // Add initial history record
-    if taskData.Status.State != "" { // Only add if status is initialized
-        if historyErr := s.AddTaskHistory(ctx, taskData.ID, models.TaskStatusModelToA2A(taskData.Status)); historyErr != nil {
+    if taskData.Status.State != "" {
+    statusA2A, convErr := models.TaskStatusModelToA2A(&taskData.Status) // Keep 2 variables
+    if convErr != nil {
+        log.Errorf("Failed to convert initial task status for history %s: %v", taskData.ID, convErr)
+    } else {
+        // Pass the statusA2A value directly (no more dereference *)
+        if historyErr := s.AddTaskHistory(ctx, taskData.ID, statusA2A); historyErr != nil {
             log.Errorf("Failed to add initial history for task %s: %v", taskData.ID, historyErr)
-            // Continue creation, but log the error
         }
     }
+	}
+
 
 	createdTask, err := s.repo.Create(ctx, taskData)
 	if err != nil {
@@ -199,11 +241,18 @@ func (s *taskService) CreateTask(ctx context.Context, taskData *models.Task) (*m
 func (s *taskService) UpdateTask(ctx context.Context, taskData *models.Task) (*models.Task, *a2a.JSONRPCError) {
     // Add history record for the new status
     if taskData.Status.State != "" {
-        if historyErr := s.AddTaskHistory(ctx, taskData.ID, models.TaskStatusModelToA2A(taskData.Status)); historyErr != nil {
-             log.Errorf("Failed to add update history for task %s: %v", taskData.ID, historyErr)
-             // Continue update, but log the error
-        }
-    }
+		statusA2A, convErr := models.TaskStatusModelToA2A(&taskData.Status) // Keep 2 variables
+		if convErr != nil {
+			 log.Errorf("Failed to convert task status for history %s: %v", taskData.ID, convErr)
+		} else {
+			// Pass the statusA2A value directly (no more dereference *)
+			 if historyErr := s.AddTaskHistory(ctx, taskData.ID, statusA2A); historyErr != nil {
+				 log.Errorf("Failed to add update history for task %s: %v", taskData.ID, historyErr)
+			}
+		}
+	}
+
+
 
 	updatedTask, err := s.repo.Update(ctx, taskData)
 	if err != nil {

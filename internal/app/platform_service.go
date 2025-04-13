@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
     "time"
+	"encoding/json"
 
 	"github.com/google/uuid" // For generating IDs if needed
 	"github.com/kathir-ks/a2a-platform/internal/agentruntime"
@@ -61,7 +62,13 @@ func (s *platformService) HandleSendTask(ctx context.Context, params a2a.TaskSen
 
 	// 4. Send request to Target Agent via Agent Runtime Client
 	log.Infof("Forwarding SendTask request (ID: %s) for task %s to %s", forwardRequestID, params.ID, targetAgentURL)
-	responseBytes, agentErr := s.agentRtCli.SendRequest(ctx, targetAgentURL, &forwardRequest) // Pass pointer
+	genericForwardRequest := &a2a.JSONRPCRequest{
+	JSONRPCMessage: forwardRequest.JSONRPCMessage,
+	Method:         forwardRequest.Method,
+	Params:         forwardRequest.Params,
+	}
+
+	responseBytes, agentErr := s.agentRtCli.SendRequest(ctx, targetAgentURL, genericForwardRequest) // Pass pointer
 	if agentErr != nil {
 		log.Errorf("Error sending request to agent %s for task %s: %v", targetAgentURL, params.ID, agentErr)
 		// This is an internal error from the platform's perspective (failed communication)
@@ -75,6 +82,7 @@ func (s *platformService) HandleSendTask(ctx context.Context, params a2a.TaskSen
 
 	// 5. Decode Response from Target Agent
 	var agentResponse a2a.SendTaskResponse
+	
 	if err := json.Unmarshal(responseBytes, &agentResponse); err != nil {
 		log.Errorf("Failed to decode response from agent %s for task %s: %v", targetAgentURL, params.ID, err)
         // TODO: Update task status to 'failed'?
@@ -89,14 +97,16 @@ func (s *platformService) HandleSendTask(ctx context.Context, params a2a.TaskSen
 		log.Warnf("Target agent %s returned error for task %s: [%d] %s", targetAgentURL, params.ID, agentResponse.Error.Code, agentResponse.Error.Message)
 		// Update local task status to failed, potentially using agent's error details
         now := time.Now().UTC()
+		failMessagePart := models.TextPart{ // Create the concrete part first
+            Type: a2a.PartTypeText,
+            Text: fmt.Sprintf("Agent error: [%d] %s", agentResponse.Error.Code, agentResponse.Error.Message),
+        }
         failStatus := models.TaskStatus{
             State: models.TaskStateFailed,
             Timestamp: &now,
-            Message: &models.Message{ // Assuming internal Message model
-                Role: a2a.RoleAgent, // Platform reporting agent failure
-                Parts: []any{ // Assuming internal Part representation
-                    models.TextPart{Type: a2a.PartTypeText, Text: fmt.Sprintf("Agent error: [%d] %s", agentResponse.Error.Code, agentResponse.Error.Message)},
-                },
+            Message: &models.Message{
+                Role: a2a.RoleAgent,
+                Parts: []models.Part{failMessagePart}, // Create slice of interface type containing the struct
             },
         }
 		taskModel, getErr := s.taskSvc.GetTaskByID(ctx, params.ID)
@@ -124,9 +134,20 @@ func (s *platformService) HandleSendTask(ctx context.Context, params a2a.TaskSen
     }
 
 	log.Infof("Received successful task update from agent %s for task %s. New status: %s", targetAgentURL, params.ID, agentResponse.Result.Status.State)
-	// Convert the received A2A Task result to our internal model format
-	updatedTaskModel := models.TaskA2AToModel(agentResponse.Result) // Need conversion
 
+	// Convert the received A2A Task result to our internal model format
+	updatedTaskModel, convErr := models.TaskA2AToModel(agentResponse.Result) // Assign to 2 vars
+	if convErr != nil {
+		log.Errorf("Failed to convert agent response task %s to internal model: %v", agentResponse.Result.ID, convErr)
+		// Decide how to handle - return internal error? Or proceed with potential data loss?
+		// Returning internal error is safer.
+		return nil, a2a.NewInternalError(map[string]string{"details": "failed processing agent response"})
+	}
+    if updatedTaskModel == nil { // Should not happen if convErr is nil, but belt-and-suspenders
+        log.Errorf("Internal consistency error: TaskA2AToModel returned nil model without error for task %s", agentResponse.Result.ID)
+		return nil, a2a.NewInternalError(map[string]string{"details": "internal error processing agent response"})
+    }
+	
 	// 7. Update Local Task State
 	// Use UpdateTask which also handles history
 	finalTaskModel, updateErr := s.taskSvc.UpdateTask(ctx, updatedTaskModel)
@@ -139,7 +160,13 @@ func (s *platformService) HandleSendTask(ctx context.Context, params a2a.TaskSen
 	}
 
 	// 8. Return the final task state (converted back to A2A type)
-	return models.TaskModelToA2A(finalTaskModel), nil // Use the state confirmed by the database update
+	taskA2A, convErr := models.TaskModelToA2A(finalTaskModel) // Assign to 2 vars
+    if convErr != nil {
+        log.Errorf("Failed to convert final task %s to A2A model for response: %v", finalTaskModel.ID, convErr)
+        // Return internal error as we can't form the correct response
+		return nil, a2a.NewInternalError(map[string]string{"details": "internal error finalizing response"})
+    }
+	return &taskA2A, nil // Return pointer to the converted value, and nil JSONRPC error
 }
 
 

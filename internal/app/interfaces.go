@@ -8,6 +8,7 @@ import (
 	"github.com/kathir-ks/a2a-platform/pkg/a2a"         // A2A schema types
 	"github.com/kathir-ks/a2a-platform/internal/agentruntime" // Agent client
 	"github.com/kathir-ks/a2a-platform/internal/repository" // Repository interfaces
+    "github.com/kathir-ks/a2a-platform/internal/tools"
 )
 
 // PlatformService orchestrates high-level agent interactions.
@@ -88,4 +89,13 @@ type PlatformServiceDeps struct {
     // May need AgentService later if more agent info is required during routing
 }
 
-// Add AgentServiceDeps, ToolServiceDeps as needed
+// AgentServiceDeps defines dependencies for AgentService.
+type AgentServiceDeps struct {
+    AgentRepo repository.AgentRepository
+    // Add other dependencies if needed
+}
+
+type ToolServiceDeps struct {
+    ToolRepo repository.ToolRepository // Optional: For persisting tool definitions
+    Registry tools.Registry            // Required: For runtime execution
+}

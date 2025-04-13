@@ -3,13 +3,27 @@ package api
 
 import (
 	"encoding/json"
-	"errors"
+	// "errors"
 	"io"
 	"net/http"
-
+	
 	"github.com/kathir-ks/a2a-platform/pkg/a2a"
 	log "github.com/sirupsen/logrus" // Or your preferred logger
 )
+
+func (api *API) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+    log.Debugf("Handling WebSocket upgrade request from %s", r.RemoteAddr)
+
+    // Delegate the entire connection upgrade and management process
+    // to the WebSocket manager. The manager's HandleConnection method
+    // should use the websocket.Upgrader internally.
+    api.wsManager.HandleConnection(w, r)
+
+    // Note: Once HandleConnection is called, the response writing and
+    // subsequent communication are handled by the wsManager and its
+    // read/write pumps for that specific connection. There's nothing
+    // more for this HTTP handler function to do.
+}
 
 // handleA2ARequest handles incoming JSON-RPC requests on the /a2a endpoint.
 func (api *API) handleA2ARequest(w http.ResponseWriter, r *http.Request) {
@@ -81,7 +95,7 @@ func (api *API) handleA2ARequest(w http.ResponseWriter, r *http.Request) {
 	switch rawRequest.Method {
 	case a2a.MethodSendTask:
 		var params a2a.TaskSendParams
-		if rpcErr = decodeParams(rawRequest.Params, ¶ms); rpcErr == nil {
+		if rpcErr = decodeParams(rawRequest.Params, &params); rpcErr == nil {
 			// --- Call Platform Service ---
 			// We assume PlatformService handles the orchestration:
 			// - finding the agent
@@ -95,7 +109,7 @@ func (api *API) handleA2ARequest(w http.ResponseWriter, r *http.Request) {
 
 	case a2a.MethodGetTask:
 		var params a2a.TaskQueryParams
-		if rpcErr = decodeParams(rawRequest.Params, ¶ms); rpcErr == nil {
+		if rpcErr = decodeParams(rawRequest.Params, &params); rpcErr == nil {
 			// --- Call Task Service ---
 			var taskResult *a2a.Task
 			taskResult, rpcErr = api.taskService.HandleGetTask(ctx, params)
@@ -104,7 +118,7 @@ func (api *API) handleA2ARequest(w http.ResponseWriter, r *http.Request) {
 
 	case a2a.MethodCancelTask:
 		var params a2a.TaskIdParams
-		if rpcErr = decodeParams(rawRequest.Params, ¶ms); rpcErr == nil {
+		if rpcErr = decodeParams(rawRequest.Params, &params); rpcErr == nil {
 			// --- Call Task Service ---
 			var taskResult *a2a.Task
 			taskResult, rpcErr = api.taskService.HandleCancelTask(ctx, params)
@@ -113,7 +127,7 @@ func (api *API) handleA2ARequest(w http.ResponseWriter, r *http.Request) {
 
 	case a2a.MethodSetTaskPushNotification:
 		var params a2a.TaskPushNotificationConfig // Note: Params *is* the config object directly
-		if rpcErr = decodeParams(rawRequest.Params, ¶ms); rpcErr == nil {
+		if rpcErr = decodeParams(rawRequest.Params, &params); rpcErr == nil {
 			// --- Call Task Service ---
 			var configResult *a2a.TaskPushNotificationConfig
 			configResult, rpcErr = api.taskService.HandleSetTaskPushNotification(ctx, params)
@@ -122,7 +136,7 @@ func (api *API) handleA2ARequest(w http.ResponseWriter, r *http.Request) {
 
 	case a2a.MethodGetTaskPushNotification:
 		var params a2a.TaskIdParams
-		if rpcErr = decodeParams(rawRequest.Params, ¶ms); rpcErr == nil {
+		if rpcErr = decodeParams(rawRequest.Params, &params); rpcErr == nil {
 			// --- Call Task Service ---
 			var configResult *a2a.TaskPushNotificationConfig
 			configResult, rpcErr = api.taskService.HandleGetTaskPushNotification(ctx, params)
