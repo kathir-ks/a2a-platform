@@ -1,0 +1,43 @@
+a2a-platform/
+├── cmd/
+│   └── server/
+│       └── main.go             # Application entry point
+├── internal/
+│   ├── api/                    # HTTP/WebSocket handlers, routing
+│   │   ├── handlers.go
+│   │   ├── router.go
+│   │   └── middleware.go       # Optional: Logging, CORS, Auth
+│   ├── app/                    # Core application logic/services
+│   │   ├── agent_service.go
+│   │   ├── task_service.go
+│   │   ├── platform_service.go # Orchestrates interactions
+│   │   └── tool_service.go     # Service for managing/using tools
+│   ├── agentruntime/           # Interface/client for communicating with external agents
+│   │   └── client.go
+│   ├── config/                 # Configuration loading
+│   │   └── config.go
+│   ├── models/                 # Domain models (internal representation)
+│   │   ├── agent.go
+│   │   ├── task.go
+│   │   ├── tool.go
+│   │   └── db_models.go        # Structs specifically for DB mapping (if different)
+│   ├── repository/             # Data persistence layer (interfaces and implementations)
+│   │   ├── agent_repo.go
+│   │   ├── task_repo.go
+│   │   ├── tool_repo.go
+│   │   └── db.go               # Database connection setup
+│   ├── tools/                  # Definitions and implementations of available tools
+│   │   ├── interface.go
+│   │   └── implementations/    # Example: calculator.go, web_search.go
+│   └── ws/                     # WebSocket connection management
+│       └── manager.go
+├── pkg/
+│   └── a2a/                    # Go structs generated/defined from the A2A JSON schema
+│       ├── schema_types.go     # Structs for AgentCard, Task, Message, etc.
+│       ├── requests.go         # Structs for A2A request types
+│       ├── responses.go        # Structs for A2A response types
+│       ├── errors.go           # Structs/constants for JSON-RPC errors
+│       └── constants.go        # Method names, roles, etc.
+├── go.mod
+├── go.sum
+└── config.yaml                 # Example configuration file
