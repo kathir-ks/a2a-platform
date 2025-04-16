@@ -1,0 +1,4770 @@
+
+--- START OF FILE: FolderStructure.txt ---
+a2a-platform/
+├── cmd/
+│   └── server/
+│       └── main.go             # Application entry point
+├── internal/
+│   ├── api/                    # HTTP/WebSocket handlers, routing
+│   │   ├── handlers.go
+│   │   ├── router.go
+│   │   └── middleware.go       # Optional: Logging, CORS, Auth
+│   ├── app/                    # Core application logic/services
+│   │   ├── agent_service.go
+│   │   ├── task_service.go
+│   │   ├── platform_service.go # Orchestrates interactions
+│   │   └── tool_service.go     # Service for managing/using tools
+│   ├── agentruntime/           # Interface/client for communicating with external agents
+│   │   └── client.go
+│   ├── config/                 # Configuration loading
+│   │   └── config.go
+│   ├── models/                 # Domain models (internal representation)
+│   │   ├── agent.go
+│   │   ├── task.go
+│   │   ├── tool.go
+│   │   └── db_models.go        # Structs specifically for DB mapping (if different)
+│   ├── repository/             # Data persistence layer (interfaces and implementations)
+│   │   ├── agent_repo.go
+│   │   ├── task_repo.go
+│   │   ├── tool_repo.go
+│   │   └── db.go               # Database connection setup
+│   ├── tools/                  # Definitions and implementations of available tools
+│   │   ├── interface.go
+│   │   └── implementations/    # Example: calculator.go, web_search.go
+│   └── ws/                     # WebSocket connection management
+│       └── manager.go
+├── pkg/
+│   └── a2a/                    # Go structs generated/defined from the A2A JSON schema
+│       ├── schema_types.go     # Structs for AgentCard, Task, Message, etc.
+│       ├── requests.go         # Structs for A2A request types
+│       ├── responses.go        # Structs for A2A response types
+│       ├── errors.go           # Structs/constants for JSON-RPC errors
+│       └── constants.go        # Method names, roles, etc.
+├── go.mod
+├── go.sum
+└── config.yaml                 # Example configuration file
+--- END OF FILE: FolderStructure.txt ---
+
+--- START OF FILE: README.md ---
+# a2a-platform
+--- END OF FILE: README.md ---
+
+--- START OF FILE: config.yml ---
+# config.yaml
+HTTP_PORT: 8081
+LOG_LEVEL: "debug"
+AGENT_CALL_TIMEOUT_SECONDS: 20
+DEFAULT_LLM_MODEL: "openai:gpt-4o" # Or "anthropic:claude-3-opus-20240229" etc.
+
+# LLM Provider configuration
+LLM_PROVIDERS:
+  openai:
+    # API_KEY: "sk-..." # RECOMMENDED: Set via environment variable (LLM_PROVIDERS_OPENAI_API_KEY) instead of file
+  anthropic:
+    # API_KEY: "ak-..." # RECOMMENDED: Set via environment variable (LLM_PROVIDERS_ANTHROPIC_API_KEY)
+# Add other providers like 'google', 'cohere' etc.
+--- END OF FILE: config.yml ---
+
+--- START OF FILE: create_prompt.py ---
+import os
+import argparse
+from typing import List
+
+def create_prompt_from_directory(directory_path: str, exclude_dirs: List[str] = None) -> str:
+    """
+    Recursively walks through a directory, reads the content of all files,
+    and concatenates them into a single string with placeholders.
+
+    Args:
+        directory_path: The path to the target directory.
+        exclude_dirs: A list of directory names to exclude from the scan.
+                      These are matched against the *basename* of the directories.
+
+    Returns:
+        A single string containing the concatenated content of all files found,
+        separated by placeholders indicating file boundaries.
+        Returns an empty string if the directory is invalid or inaccessible.
+    """
+    if not os.path.isdir(directory_path):
+        print(f"Error: Provided path '{directory_path}' is not a valid directory.")
+        return ""
+
+    prompt_parts = []
+    separator_start = "\n--- START OF FILE: {filepath} ---\n"
+    separator_end = "\n--- END OF FILE: {filepath} ---\n"
+
+    print(f"Scanning directory: {directory_path}")
+
+    if exclude_dirs is None:
+        exclude_dirs = [] # Initialize empty list to avoid NoneType errors later
+
+    for root, dirs, files in os.walk(directory_path):
+        #  Mutate the dirs list in-place to prevent os.walk from entering excluded directories
+        dirs[:] = [d for d in dirs if d not in exclude_dirs]
+        files.sort()  #Sort files for more predicatble output
+        dirs.sort()  #Sort directories as well
+
+        print(f"  Entering: {root}") # Progress indicator
+
+        for filename in files:
+            file_path = os.path.join(root, filename)
+            relative_path = os.path.relpath(file_path, directory_path) # Get path relative to start dir
+
+            print(f"    Reading: {relative_path}") # Progress indicator
+
+            prompt_parts.append(separator_start.format(filepath=relative_path))
+            try:
+                # Use 'with' to ensure file is closed automatically
+                # Specify encoding, utf-8 is common. Handle potential errors.
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                    prompt_parts.append(content)
+            except Exception as e:
+                # Catch potential OS errors (permissions) or other read issues
+                error_message = f"\n*** Could not read file: {relative_path} | Error: {e} ***\n"
+                print(f"    Warning: {error_message.strip()}")
+                prompt_parts.append(error_message) # Add error message to prompt
+
+            prompt_parts.append(separator_end.format(filepath=relative_path))
+
+    print("Finished scanning.")
+    return "".join(prompt_parts)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Recursively read files in a directory and concatenate their content into a single prompt."
+    )
+    parser.add_argument(
+        "directory",
+        help="The path to the directory to scan."
+    )
+    parser.add_argument(
+        "-e", "--exclude",
+        nargs='+', #Allows multiple values
+        help="List of directory names to exclude (base name only).",
+        default=[]
+    )
+    parser.add_argument(
+        "-o", "--output",
+        help="Optional: Path to a file where the resulting prompt should be saved.",
+        default=None
+    )
+
+    args = parser.parse_args()
+
+    target_directory = args.directory
+    exclude_directories = args.exclude  #List of excluded directories
+
+    # --- Perform the operation ---
+    full_prompt = create_prompt_from_directory(target_directory, exclude_directories)
+
+    if full_prompt:
+        if args.output:
+            try:
+                with open(args.output, 'w', encoding='utf-8') as outfile:
+                    outfile.write(full_prompt)
+                print(f"\nSuccessfully saved prompt to: {args.output}")
+            except Exception as e:
+                print(f"\nError writing prompt to file '{args.output}': {e}")
+        else:
+            # --- Print the result to the console ---
+            print("\n--- Generated Prompt ---")
+            print(full_prompt)
+            print("--- End of Prompt ---")
+            print(f"\nTotal length of prompt: {len(full_prompt)} characters")
+
+    else:
+        print("No prompt generated (invalid directory or empty).")
+--- END OF FILE: create_prompt.py ---
+
+--- START OF FILE: errors.go ---
+// internal/repository/memory/errors.go
+package memory
+
+import "errors"
+
+// ErrNotFound indicates that the requested resource was not found in memory.
+var ErrNotFound = errors.New("resource not found in memory")
+
+// ErrAlreadyExists indicates that a resource with the given ID/key already exists.
+var ErrAlreadyExists = errors.New("resource already exists")
+--- END OF FILE: errors.go ---
+
+--- START OF FILE: go.mod ---
+module github.com/kathir-ks/a2a-platform
+
+go 1.24.2
+
+require (
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/mux v1.8.1
+	github.com/gorilla/websocket v1.5.3
+	github.com/sirupsen/logrus v1.9.3
+	github.com/spf13/viper v1.20.1
+)
+
+require (
+	github.com/fsnotify/fsnotify v1.8.0 // indirect
+	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
+	github.com/pelletier/go-toml/v2 v2.2.3 // indirect
+	github.com/sagikazarmark/locafero v0.7.0 // indirect
+	github.com/sourcegraph/conc v0.3.0 // indirect
+	github.com/spf13/afero v1.12.0 // indirect
+	github.com/spf13/cast v1.7.1 // indirect
+	github.com/spf13/pflag v1.0.6 // indirect
+	github.com/subosito/gotenv v1.6.0 // indirect
+	go.uber.org/atomic v1.9.0 // indirect
+	go.uber.org/multierr v1.9.0 // indirect
+	golang.org/x/sys v0.29.0 // indirect
+	golang.org/x/text v0.21.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
+)
+
+--- END OF FILE: go.mod ---
+
+--- START OF FILE: go.sum ---
+github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/frankban/quicktest v1.14.6 h1:7Xjx+VpznH+oBnejlPUj8oUpdxnVs4f8XU8WnHkI4W8=
+github.com/frankban/quicktest v1.14.6/go.mod h1:4ptaffx2x8+WTWXmUCuVU6aPUX1/Mz7zb5vbUoiM6w0=
+github.com/fsnotify/fsnotify v1.8.0 h1:dAwr6QBTBZIkG8roQaJjGof0pp0EeF+tNV7YBP3F/8M=
+github.com/fsnotify/fsnotify v1.8.0/go.mod h1:8jBTzvmWwFyi3Pb8djgCCO5IBqzKJ/Jwo8TRcHyHii0=
+github.com/go-viper/mapstructure/v2 v2.2.1 h1:ZAaOCxANMuZx5RCeg0mBdEZk7DZasvvZIxtHqx8aGss=
+github.com/go-viper/mapstructure/v2 v2.2.1/go.mod h1:oJDH3BJKyqBA2TXFhDsKDGDTlndYOZ6rGS0BRZIxGhM=
+github.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=
+github.com/google/go-cmp v0.6.0/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=
+github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
+github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
+github.com/gorilla/mux v1.8.1 h1:TuBL49tXwgrFYWhqrNgrUNEY92u81SPhu7sTdzQEiWY=
+github.com/gorilla/mux v1.8.1/go.mod h1:AKf9I4AEqPTmMytcMc0KkNouC66V3BtZ4qD5fmWSiMQ=
+github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
+github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
+github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
+github.com/kr/pretty v0.3.1/go.mod h1:hoEshYVHaxMs3cyo3Yncou5ZscifuDolrwPKZanG3xk=
+github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
+github.com/kr/text v0.2.0/go.mod h1:eLer722TekiGuMkidMxC/pM04lWEeraHUUmBw8l2grE=
+github.com/pelletier/go-toml/v2 v2.2.3 h1:YmeHyLY8mFWbdkNWwpr+qIL2bEqT0o95WSdkNHvL12M=
+github.com/pelletier/go-toml/v2 v2.2.3/go.mod h1:MfCQTFTvCcUyyvvwm1+G6H/jORL20Xlb6rzQu9GuUkc=
+github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/rogpeppe/go-internal v1.9.0 h1:73kH8U+JUqXU8lRuOHeVHaa/SZPifC7BkcraZVejAe8=
+github.com/rogpeppe/go-internal v1.9.0/go.mod h1:WtVeX8xhTBvf0smdhujwtBcq4Qrzq/fJaraNFVN+nFs=
+github.com/sagikazarmark/locafero v0.7.0 h1:5MqpDsTGNDhY8sGp0Aowyf0qKsPrhewaLSsFaodPcyo=
+github.com/sagikazarmark/locafero v0.7.0/go.mod h1:2za3Cg5rMaTMoG/2Ulr9AwtFaIppKXTRYnozin4aB5k=
+github.com/sirupsen/logrus v1.9.3 h1:dueUQJ1C2q9oE3F7wvmSGAaVtTmUizReu6fjN8uqzbQ=
+github.com/sirupsen/logrus v1.9.3/go.mod h1:naHLuLoDiP4jHNo9R0sCBMtWGeIprob74mVsIT4qYEQ=
+github.com/sourcegraph/conc v0.3.0 h1:OQTbbt6P72L20UqAkXXuLOj79LfEanQ+YQFNpLA9ySo=
+github.com/sourcegraph/conc v0.3.0/go.mod h1:Sdozi7LEKbFPqYX2/J+iBAM6HpqSLTASQIKqDmF7Mt0=
+github.com/spf13/afero v1.12.0 h1:UcOPyRBYczmFn6yvphxkn9ZEOY65cpwGKb5mL36mrqs=
+github.com/spf13/afero v1.12.0/go.mod h1:ZTlWwG4/ahT8W7T0WQ5uYmjI9duaLQGy3Q2OAl4sk/4=
+github.com/spf13/cast v1.7.1 h1:cuNEagBQEHWN1FnbGEjCXL2szYEXqfJPbP2HNUaca9Y=
+github.com/spf13/cast v1.7.1/go.mod h1:ancEpBxwJDODSW/UG4rDrAqiKolqNNh2DX3mk86cAdo=
+github.com/spf13/pflag v1.0.6 h1:jFzHGLGAlb3ruxLB8MhbI6A8+AQX/2eW4qeyNZXNp2o=
+github.com/spf13/pflag v1.0.6/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
+github.com/spf13/viper v1.20.1 h1:ZMi+z/lvLyPSCoNtFCpqjy0S4kPbirhpTMwl8BkW9X4=
+github.com/spf13/viper v1.20.1/go.mod h1:P9Mdzt1zoHIG8m2eZQinpiBjo6kCmZSKBClNNqjJvu4=
+github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
+github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+github.com/stretchr/testify v1.10.0 h1:Xv5erBjTwe/5IxqUQTdXv5kgmIvbHo3QQyRwhJsOfJA=
+github.com/stretchr/testify v1.10.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
+github.com/subosito/gotenv v1.6.0 h1:9NlTDc1FTs4qu0DDq7AEtTPNw6SVm7uBMsUCUjABIf8=
+github.com/subosito/gotenv v1.6.0/go.mod h1:Dk4QP5c2W3ibzajGcXpNraDfq2IrhjMIvMSWPKKo0FU=
+go.uber.org/atomic v1.9.0 h1:ECmE8Bn/WFTYwEW/bpKD3M8VtR/zQVbavAoalC1PYyE=
+go.uber.org/atomic v1.9.0/go.mod h1:fEN4uk6kAWBTFdckzkM89CLk9XfWZrxpCo0nPH17wJc=
+go.uber.org/multierr v1.9.0 h1:7fIwc/ZtS0q++VgcfqFDxSBZVv/Xo49/SYnDFupUwlI=
+go.uber.org/multierr v1.9.0/go.mod h1:X2jQV1h+kxSjClGpnseKVIxpmcjrj7MNnI0bnlfKTVQ=
+golang.org/x/sys v0.0.0-20220715151400-c0bba94af5f8/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/sys v0.29.0 h1:TPYlXGxvx1MGTn2GiZDhnjPA9wZzZeGKHHmKhHYvgaU=
+golang.org/x/sys v0.29.0/go.mod h1:/VUhepiaJMQUp4+oa/7Zr1D23ma6VTLIYjOOTFZPUcA=
+golang.org/x/text v0.21.0 h1:zyQAAkrwaneQ066sspRyJaG9VNi/YJ1NfzcGB3hZ/qo=
+golang.org/x/text v0.21.0/go.mod h1:4IBbMaMmOPCJ8SecivzSH54+73PCFmPWxNTLm+vZkEQ=
+gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15 h1:YR8cESwS4TdDjEe65xsg0ogRM/Nc3DYOhEAlW+xobZo=
+gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+
+--- END OF FILE: go.sum ---
+
+--- START OF FILE: cmd\server\main.go ---
+// cmd/server/main.go
+package main
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings" // Needed for initializeLLMClients
+	"syscall"
+	"time"
+	"errors"
+
+	"github.com/kathir-ks/a2a-platform/internal/agentruntime"
+	"github.com/kathir-ks/a2a-platform/internal/api"
+	"github.com/kathir-ks/a2a-platform/internal/app"
+	"github.com/kathir-ks/a2a-platform/internal/config"
+	"github.com/kathir-ks/a2a-platform/internal/llmclient"
+	// Import repository interfaces IF needed directly, usually not needed here
+	// "github.com/kathir-ks/a2a-platform/internal/repository"
+	"github.com/kathir-ks/a2a-platform/internal/repository/memory" // Import memory repo implementation
+	// "github.com/kathir-ks/a2a-platform/internal/repository/sql" // Or SQL implementation
+	"github.com/kathir-ks/a2a-platform/internal/tools"
+	"github.com/kathir-ks/a2a-platform/internal/tools/examples" // Import for CalculatorTool struct
+	"github.com/kathir-ks/a2a-platform/internal/ws"             // Import WS manager
+
+	log "github.com/sirupsen/logrus"
+)
+
+func main() {
+	// --- Configuration ---
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	// --- Logging ---
+	setupLogging(cfg.LogLevel)
+	log.Info("Starting A2A Platform Backend...")
+
+	// --- Database & Repositories ---
+	log.Info("Using IN-MEMORY repositories (Data will be lost on shutdown)")
+	taskRepo := memory.NewMemoryTaskRepository()
+	agentRepo := memory.NewMemoryAgentRepository()
+	toolRepo := memory.NewMemoryToolRepository()
+	// db := setupDatabase(cfg.DatabaseURL) // For SQL
+	// taskRepo := sql.NewSQLTaskRepository(db) // For SQL
+	// agentRepo := sql.NewMemoryAgentRepository(db) // For SQL
+	// toolRepo := sql.NewMemoryToolRepository(db) // For SQL
+
+	// --- LLM Clients ---
+	llmClients := initializeLLMClients(cfg) // Initialize LLM clients based on config
+
+	// --- Agent Runtime Client ---
+	agentRtClient := agentruntime.NewHTTPClient(cfg)
+
+	// --- Tools Registry & Tools ---
+	toolRegistry := tools.NewMemoryRegistry()
+	// Initialize and register the LLM Tool
+	if len(llmClients) > 0 {
+		llmTool, err := tools.NewLLMTool(llmClients, cfg.DefaultLLMModel)
+		if err != nil {
+			log.Warnf("Failed to initialize LLM Tool: %v. LLM tool will be unavailable.", err)
+		} else {
+			// Use background context for initial registrations
+			bgCtx := context.Background()
+			if err := toolRegistry.Register(bgCtx, llmTool); err != nil {
+				log.Errorf("Failed to register LLM tool: %v", err)
+			}
+		}
+	} else {
+		log.Info("No LLM providers configured, LLM tool will not be available.")
+	}
+	// Register other tools (e.g., Calculator)
+	if err := toolRegistry.Register(context.Background(), &examples.CalculatorTool{}); err != nil {
+		log.Errorf("Failed to register Calculator tool: %v", err)
+	}
+
+	// --- Application Services ---
+	// Create dependency structs (ensure these structs are defined in internal/app/interfaces.go)
+	taskServiceDeps := app.TaskServiceDeps{TaskRepo: taskRepo}
+	agentServiceDeps := app.AgentServiceDeps{AgentRepo: agentRepo}
+	toolServiceDeps := app.ToolServiceDeps{
+		ToolRepo: toolRepo,     // Pass repo (can be nil if only runtime needed)
+		Registry: toolRegistry, // Pass registry
+	}
+	platformServiceDeps := app.PlatformServiceDeps{
+		TaskSvc:    nil, // TaskService needs to be created first
+		AgentRtCli: agentRtClient,
+		// Add AgentService/ToolService here if PlatformService needs them
+	}
+
+	// Create services, injecting dependencies (ensure New... functions exist in internal/app/)
+	taskService := app.NewTaskService(taskServiceDeps)
+	agentService := app.NewAgentService(agentServiceDeps)
+	toolService := app.NewToolService(toolServiceDeps)
+	platformServiceDeps.TaskSvc = taskService // Inject TaskService dependency into PlatformService deps
+	platformService := app.NewPlatformService(platformServiceDeps)
+
+	// --- WebSocket Manager ---
+	// Pass the specific services the WS manager needs
+	wsManager := ws.NewConnectionManager(platformService, taskService)
+
+	// --- API Router ---
+	// Pass all services and the WS manager to the router
+	// Ensure api.NewRouter signature matches these arguments
+	router := api.NewRouter(
+		platformService, // 1st: PlatformService
+		taskService,     // 2nd: TaskService
+		agentService,    // 3rd: AgentService
+		toolService,     // 4th: ToolService
+		wsManager,       // 5th: ws.Manager
+	)
+	
+	// --- HTTP Server ---
+	server := &http.Server{
+		Addr:         fmt.Sprintf(":%d", cfg.HTTPPort),
+		Handler:      router,                     // Use the configured router
+		ReadTimeout:  15 * time.Second,           // Slightly longer read timeout
+		WriteTimeout: 15 * time.Second,           // Slightly longer write timeout
+		IdleTimeout:  60 * time.Second,
+	}
+
+	// --- Graceful Shutdown ---
+	// Run server in a goroutine so that it doesn't block.
+	go func() {
+		log.Infof("Server starting on port %d", cfg.HTTPPort)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("Could not listen on %s: %v\n", server.Addr, err)
+		}
+	}()
+
+	// Wait for interrupt signal to gracefully shutdown the server
+	quit := make(chan os.Signal, 1)
+	// kill (no param) default send syscall.SIGTERM
+	// kill -2 is syscall.SIGINT
+	// kill -9 is syscall.SIGKILL but can't be caught, so don't need to add it
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Info("Shutting down server...")
+
+	// The context is used to inform the server it has N seconds to finish
+	// the request it is currently handling
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second) // Increased timeout
+	defer cancel()
+
+	// Shutdown WebSocket Manager first to stop accepting new connections & close existing
+	log.Info("Closing WebSocket manager...")
+	wsManager.Close() // Call the Close method
+
+	// Shutdown HTTP server
+	log.Info("Shutting down HTTP server...")
+	if err := server.Shutdown(ctx); err != nil {
+		log.Fatalf("Server forced to shutdown: %v", err)
+	}
+
+	// Close database connection if applicable
+	// closeDatabase(db)
+
+	log.Info("Server exiting")
+}
+
+// setupLogging configures the logger based on the loaded configuration.
+func setupLogging(logLevel string) {
+	level, err := log.ParseLevel(logLevel)
+	if err != nil {
+		log.Warnf("Invalid log level '%s', defaulting to 'info'. Error: %v", logLevel, err)
+		level = log.InfoLevel
+	}
+	log.SetLevel(level)
+	log.SetFormatter(&log.TextFormatter{
+		FullTimestamp:   true,
+		TimestampFormat: time.RFC3339, // More standard timestamp format
+	})
+	// Example: Output to a file as well
+	// logFile, err := os.OpenFile("a2a-platform.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	// if err == nil {
+	//  log.SetOutput(io.MultiWriter(os.Stdout, logFile))
+	// } else {
+	//  log.Info("Failed to log to file, using default stderr")
+	// }
+
+	log.Infof("Log level set to %s", level.String())
+}
+
+// initializeLLMClients creates LLM client instances based on config.
+func initializeLLMClients(cfg *config.Config) []llmclient.Client {
+	clients := make([]llmclient.Client, 0, len(cfg.LLMProviders))
+
+	for providerName, providerCfg := range cfg.LLMProviders {
+		if providerCfg.APIKey == "" {
+			log.Warnf("API key missing for LLM provider '%s', skipping client initialization.", providerName)
+			continue
+		}
+
+		var client llmclient.Client
+		var err error
+
+		switch strings.ToLower(providerName) {
+		case "openai":
+			// Assuming NewOpenAIClient exists and is implemented correctly
+			client, err = llmclient.NewOpenAIClient(providerCfg.APIKey)
+			if err != nil {
+				log.Errorf("Failed to create OpenAI client: %v", err)
+			}
+		case "anthropic":
+			// client, err = llmclient.NewAnthropicClient(providerCfg.APIKey) // Placeholder
+			log.Warn("Anthropic client not implemented yet")
+			// if err != nil { log.Errorf(...) }
+		// Add cases for other providers (google, cohere, etc.)
+		default:
+			log.Warnf("Unsupported LLM provider configured: %s", providerName)
+		}
+
+		if client != nil && err == nil {
+			clients = append(clients, client)
+		}
+	}
+	log.Infof("Initialized %d LLM clients", len(clients))
+	return clients
+}
+
+// --- Placeholder database functions (replace with real implementation if using SQL) ---
+// func setupDatabase(dbURL string) *sql.DB { ... }
+// func closeDatabase(db *sql.DB) { ... }
+
+// --- Error import for shutdown checking ---
+// import "errors" // Ensure errors package is imported
+--- END OF FILE: cmd\server\main.go ---
+
+--- START OF FILE: internal\agentruntime\client.go ---
+// internal/agentruntime/client.go
+package agentruntime
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+
+	"github.com/kathir-ks/a2a-platform/internal/config" // Need config for timeout
+	"github.com/kathir-ks/a2a-platform/pkg/a2a"         // Need A2A request types
+	log "github.com/sirupsen/logrus"
+)
+
+// Client defines the interface for communicating with external A2A agents.
+type Client interface {
+	// SendRequest sends a standard A2A JSON-RPC request to the target agent.
+	// It returns the raw response body on success (HTTP 2xx).
+	// It returns an error for network issues, timeouts, or non-2xx HTTP status codes.
+	// JSON-RPC level errors within a successful HTTP response should be handled by the caller.
+	SendRequest(ctx context.Context, targetAgentURL string, request *a2a.JSONRPCRequest) ([]byte, error)
+
+	// TODO: Add SendStreamingRequest for WebSocket communication later
+	// SendStreamingRequest(ctx context.Context, targetAgentURL string, request *a2a.JSONRPCRequest) (connection, error)
+}
+
+// httpClient implements the Client interface using Go's standard HTTP client.
+type httpClient struct {
+	client  *http.Client
+	timeout time.Duration
+}
+
+// NewHTTPClient creates a new agent runtime client using HTTP.
+func NewHTTPClient(cfg *config.Config) Client {
+	if cfg == nil {
+		log.Fatal("Cannot create agent runtime client without configuration")
+	}
+	// Create a shared HTTP client with connection pooling
+	// Configure timeouts and other transport settings as needed
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+		// Add TLS config if needed for custom CAs etc.
+		// TLSClientConfig: &tls.Config{...}
+	}
+
+	return &httpClient{
+		client: &http.Client{
+			Transport: transport,
+			Timeout:   cfg.AgentCallTimeout, // Set default timeout on the client itself
+		},
+		timeout: cfg.AgentCallTimeout, // Store for potential context override if needed
+	}
+}
+
+// SendRequest implements the Client interface.
+func (c *httpClient) SendRequest(ctx context.Context, targetAgentURL string, request *a2a.JSONRPCRequest) ([]byte, error) {
+	// 1. Marshal the request payload
+	requestBytes, err := json.Marshal(request)
+	if err != nil {
+		log.Errorf("Failed to marshal A2A request for agent %s: %v", targetAgentURL, err)
+		return nil, fmt.Errorf("failed to marshal request: %w", err) // Wrap error
+	}
+
+	// 2. Create HTTP Request
+	// Use the context passed in, the http.Client's timeout will still apply
+	// unless the context has an earlier deadline.
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, targetAgentURL, bytes.NewBuffer(requestBytes))
+	if err != nil {
+		log.Errorf("Failed to create HTTP request for agent %s: %v", targetAgentURL, err)
+		return nil, fmt.Errorf("failed to create http request: %w", err)
+	}
+
+	// 3. Set Headers
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Accept", "application/json")
+	// TODO: Add Authentication headers if needed based on agent's AgentCard.Authentication
+	// Example: httpRequest.Header.Set("Authorization", "Bearer "+token)
+
+	log.Debugf("Sending A2A request (ID: %v, Method: %s) to %s", request.ID, request.Method, targetAgentURL)
+
+	// 4. Execute Request
+	httpResponse, err := c.client.Do(httpRequest)
+	if err != nil {
+		// Handle client-level errors (network, DNS, context deadline exceeded etc.)
+		log.Warnf("HTTP client error sending request to %s: %v", targetAgentURL, err)
+		return nil, fmt.Errorf("http client error calling agent %s: %w", targetAgentURL, err)
+	}
+	defer httpResponse.Body.Close()
+
+	// 5. Check HTTP Status Code
+	if httpResponse.StatusCode < 200 || httpResponse.StatusCode >= 300 {
+		// Read some of the body for context, but don't necessarily trust it's JSON
+		bodyBytes, _ := io.ReadAll(io.LimitReader(httpResponse.Body, 1024)) // Limit read size
+		errorMsg := fmt.Sprintf("agent %s returned non-2xx status: %d %s",
+			targetAgentURL,
+			httpResponse.StatusCode,
+			http.StatusText(httpResponse.StatusCode),
+		)
+		if len(bodyBytes) > 0 {
+			errorMsg += fmt.Sprintf(" (body preview: %s)", string(bodyBytes))
+		}
+		log.Warn(errorMsg)
+		return nil, fmt.Errorf(errorMsg) // Return a distinct error for non-2xx status
+	}
+
+	// 6. Read Response Body
+	responseBytes, err := io.ReadAll(httpResponse.Body)
+	if err != nil {
+		log.Errorf("Failed to read response body from agent %s: %v", targetAgentURL, err)
+		return nil, fmt.Errorf("failed to read response body from agent %s: %w", targetAgentURL, err)
+	}
+
+	log.Debugf("Received successful HTTP response (%d) from %s (Body size: %d)", httpResponse.StatusCode, targetAgentURL, len(responseBytes))
+
+	// 7. Return raw bytes (caller will decode JSON-RPC structure)
+	return responseBytes, nil
+}
+--- END OF FILE: internal\agentruntime\client.go ---
+
+--- START OF FILE: internal\api\handlers.go ---
+// internal/api/handlers.go
+package api
+
+import (
+	"encoding/json"
+	// "errors"
+	"io"
+	"net/http"
+	
+	"github.com/kathir-ks/a2a-platform/pkg/a2a"
+	log "github.com/sirupsen/logrus" // Or your preferred logger
+)
+
+func (api *API) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+    log.Debugf("Handling WebSocket upgrade request from %s", r.RemoteAddr)
+
+    // Delegate the entire connection upgrade and management process
+    // to the WebSocket manager. The manager's HandleConnection method
+    // should use the websocket.Upgrader internally.
+    api.wsManager.HandleConnection(w, r)
+
+    // Note: Once HandleConnection is called, the response writing and
+    // subsequent communication are handled by the wsManager and its
+    // read/write pumps for that specific connection. There's nothing
+    // more for this HTTP handler function to do.
+}
+
+// handleA2ARequest handles incoming JSON-RPC requests on the /a2a endpoint.
+func (api *API) handleA2ARequest(w http.ResponseWriter, r *http.Request) {
+	var response *a2a.JSONRPCResponse
+	var request a2a.JSONRPCRequest // Use generic request first
+	requestID := interface{}(nil) // Keep track of the request ID
+
+	// 1. Decode Request Body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Errorf("Failed to read request body: %v", err)
+		response = &a2a.JSONRPCResponse{
+			JSONRPCMessage: a2a.JSONRPCMessage{JSONRPC: a2a.JSONRPCVersion, ID: requestID},
+			Error:          a2a.NewInternalError("failed to read request body"),
+		}
+		writeJSONResponse(w, http.StatusInternalServerError, response) // Use status 500 for read error
+		return
+	}
+	defer r.Body.Close()
+
+	// Use json.RawMessage for Params initially to allow specific decoding later
+	var rawRequest struct {
+		a2a.JSONRPCMessage
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"` // Decode params lazily
+	}
+
+	if err := json.Unmarshal(body, &rawRequest); err != nil {
+		log.Warnf("Failed to unmarshal JSON-RPC request: %v", err)
+		response = &a2a.JSONRPCResponse{
+			JSONRPCMessage: a2a.JSONRPCMessage{JSONRPC: a2a.JSONRPCVersion, ID: requestID}, // ID might be absent/invalid here
+			Error:          a2a.NewParseError(err.Error()),
+		}
+		// Try to get ID if possible, even from partial parse (best effort)
+		_ = json.Unmarshal(body, &request)
+		if request.ID != nil {
+			response.ID = request.ID
+		}
+		writeJSONResponse(w, http.StatusBadRequest, response) // Use status 400 for parse error
+		return
+	}
+
+	requestID = rawRequest.ID // Store the valid ID
+
+	// 2. Basic Validation
+	if rawRequest.JSONRPC != a2a.JSONRPCVersion {
+		response = &a2a.JSONRPCResponse{
+			JSONRPCMessage: a2a.JSONRPCMessage{JSONRPC: a2a.JSONRPCVersion, ID: requestID},
+			Error:          a2a.NewInvalidRequestError("invalid jsonrpc version"),
+		}
+		writeJSONResponse(w, http.StatusBadRequest, response)
+		return
+	}
+	if rawRequest.Method == "" {
+		response = &a2a.JSONRPCResponse{
+			JSONRPCMessage: a2a.JSONRPCMessage{JSONRPC: a2a.JSONRPCVersion, ID: requestID},
+			Error:          a2a.NewInvalidRequestError("method is required"),
+		}
+		writeJSONResponse(w, http.StatusBadRequest, response)
+		return
+	}
+
+	// 3. Route to appropriate service based on method
+	var result any
+	var rpcErr *a2a.JSONRPCError
+
+	ctx := r.Context() // Pass context down
+
+	switch rawRequest.Method {
+	case a2a.MethodSendTask:
+		var params a2a.TaskSendParams
+		if rpcErr = decodeParams(rawRequest.Params, &params); rpcErr == nil {
+			// --- Call Platform Service ---
+			// We assume PlatformService handles the orchestration:
+			// - finding the agent
+			// - creating/updating task in TaskService
+			// - calling the external agent via agentruntime client
+			// - returning the final task state or an error
+			var taskResult *a2a.Task
+			taskResult, rpcErr = api.platformService.HandleSendTask(ctx, params)
+			result = taskResult // Assign to generic result
+		}
+
+	case a2a.MethodGetTask:
+		var params a2a.TaskQueryParams
+		if rpcErr = decodeParams(rawRequest.Params, &params); rpcErr == nil {
+			// --- Call Task Service ---
+			var taskResult *a2a.Task
+			taskResult, rpcErr = api.taskService.HandleGetTask(ctx, params)
+			result = taskResult
+		}
+
+	case a2a.MethodCancelTask:
+		var params a2a.TaskIdParams
+		if rpcErr = decodeParams(rawRequest.Params, &params); rpcErr == nil {
+			// --- Call Task Service ---
+			var taskResult *a2a.Task
+			taskResult, rpcErr = api.taskService.HandleCancelTask(ctx, params)
+			result = taskResult
+		}
+
+	case a2a.MethodSetTaskPushNotification:
+		var params a2a.TaskPushNotificationConfig // Note: Params *is* the config object directly
+		if rpcErr = decodeParams(rawRequest.Params, &params); rpcErr == nil {
+			// --- Call Task Service ---
+			var configResult *a2a.TaskPushNotificationConfig
+			configResult, rpcErr = api.taskService.HandleSetTaskPushNotification(ctx, params)
+			result = configResult
+		}
+
+	case a2a.MethodGetTaskPushNotification:
+		var params a2a.TaskIdParams
+		if rpcErr = decodeParams(rawRequest.Params, &params); rpcErr == nil {
+			// --- Call Task Service ---
+			var configResult *a2a.TaskPushNotificationConfig
+			configResult, rpcErr = api.taskService.HandleGetTaskPushNotification(ctx, params)
+			result = configResult
+		}
+
+		// --- Add cases for other non-streaming methods if any ---
+
+	default:
+		log.Warnf("Method not found: %s", rawRequest.Method)
+		rpcErr = a2a.NewMethodNotFoundError(nil)
+	}
+
+	// 4. Construct and Encode Response
+	response = &a2a.JSONRPCResponse{
+		JSONRPCMessage: a2a.JSONRPCMessage{JSONRPC: a2a.JSONRPCVersion, ID: requestID},
+		Error:          rpcErr, // Assign error if one occurred
+	}
+	if rpcErr == nil {
+		response.Result = result // Assign result only if no error
+	}
+
+	// Determine appropriate HTTP status code based on JSON-RPC error
+	httpStatusCode := http.StatusOK // Default success
+	if rpcErr != nil {
+		httpStatusCode = mapJSONRPCErrorToHTTPStatus(rpcErr.Code)
+	}
+
+	writeJSONResponse(w, httpStatusCode, response)
+}
+
+// decodeParams tries to unmarshal the raw params into the target struct.
+// Returns a JSONRPCError if decoding fails.
+func decodeParams(rawParams json.RawMessage, target interface{}) *a2a.JSONRPCError {
+	if len(rawParams) == 0 {
+		// Handle cases where params might be optional or not provided correctly
+		// Depending on the method, empty params might be valid or invalid.
+		// For simplicity here, we assume they are required if target is non-nil.
+		// Specific handlers might need more nuanced checks.
+		// Let's treat empty params as invalid for now if target expects data.
+		// You might need to adjust this based on specific method requirements.
+        if target != nil {
+             // Check if target is a pointer to a struct and if the underlying struct is empty.
+             // This logic can get complex. A simpler approach might be needed if methods
+             // truly have optional params objects.
+             // For now, assume if params are expected, they shouldn't be empty raw message.
+		    return a2a.NewInvalidParamsError("parameters are required but missing")
+        }
+        return nil // Params are optional and missing, which is okay
+	}
+
+	if err := json.Unmarshal(rawParams, target); err != nil {
+		log.Warnf("Failed to unmarshal params: %v", err)
+		// Provide more context in the error data if possible
+		return a2a.NewInvalidParamsError(map[string]string{"details": err.Error()})
+	}
+	return nil
+}
+
+// writeJSONResponse encodes the response and writes it to the ResponseWriter.
+func writeJSONResponse(w http.ResponseWriter, httpStatusCode int, response *a2a.JSONRPCResponse) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(httpStatusCode)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Errorf("Failed to write JSON response: %v", err)
+		// Can't write anymore if Encode failed, just log it.
+	}
+}
+
+// mapJSONRPCErrorToHTTPStatus maps standard JSON-RPC error codes to appropriate HTTP status codes.
+func mapJSONRPCErrorToHTTPStatus(code int) int {
+	switch code {
+	case a2a.CodeParseError:
+		return http.StatusBadRequest
+	case a2a.CodeInvalidRequest:
+		return http.StatusBadRequest
+	case a2a.CodeMethodNotFound:
+		return http.StatusNotFound
+	case a2a.CodeInvalidParams:
+		return http.StatusBadRequest
+	case a2a.CodeInternalError:
+		return http.StatusInternalServerError
+	// A2A Specific errors - map as appropriate
+	case a2a.CodeTaskNotFound:
+		return http.StatusNotFound // Task not found -> 404
+	case a2a.CodeTaskNotCancelable:
+		return http.StatusConflict // Cannot perform action due to state -> 409
+	case a2a.CodePushNotificationNotSupported:
+		return http.StatusNotImplemented // Feature not available -> 501
+	case a2a.CodeUnsupportedOperation:
+		return http.StatusNotImplemented // Feature not available -> 501
+	default:
+		// For custom or unknown errors, Internal Server Error is safest
+		return http.StatusInternalServerError
+	}
+}
+
+// --- WebSocket Handler (Placeholder) ---
+// func (api *API) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+//    // WebSocket upgrade logic
+//    // Connection registration with api.wsManager
+//    // Goroutine for reading messages (sendSubscribe, resubscribe)
+//    // Error handling and connection cleanup
+//    log.Info("WebSocket connection attempt") // Placeholder
+//    http.Error(w, "WebSocket endpoint not implemented", http.StatusNotImplemented)
+// }
+--- END OF FILE: internal\api\handlers.go ---
+
+--- START OF FILE: internal\api\middleware.go ---
+// internal/api/middleware.go
+package api
+
+import (
+	"net/http"
+	"time"
+
+	log "github.com/sirupsen/logrus" // Or your preferred logger
+	"github.com/kathir-ks/a2a-platform/pkg/a2a"
+)
+
+// loggingMiddleware logs incoming requests.
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		// Create a response writer wrapper to capture status code
+		lrw := newLoggingResponseWriter(w)
+
+		// Call the next handler in the chain
+		next.ServeHTTP(lrw, r)
+
+		duration := time.Since(start)
+
+		// Log request details
+		log.WithFields(log.Fields{
+			"method":     r.Method,
+			"path":       r.URL.Path,
+			"remote_addr": r.RemoteAddr,
+			"user_agent": r.UserAgent(),
+			"status":     lrw.statusCode,
+			"duration_ms": duration.Milliseconds(),
+		}).Info("Handled request")
+	})
+}
+
+// recoveryMiddleware recovers from panics and logs them.
+func recoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				log.WithField("panic", err).Error("Recovered from handler panic")
+
+				// Return a generic internal server error response
+				// Avoid sending panic details to the client
+				response := &a2a.JSONRPCResponse{
+					JSONRPCMessage: a2a.JSONRPCMessage{JSONRPC: a2a.JSONRPCVersion, ID: nil}, // ID might not be available here
+					Error:          a2a.NewInternalError("an unexpected error occurred"),
+				}
+				// Attempt to extract ID if request body was parsed before panic
+				// This is tricky and might not always work reliably after a panic.
+				// Consider how much effort you want to put into ID recovery vs. just logging.
+
+				writeJSONResponse(w, http.StatusInternalServerError, response)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// --- Helper for loggingMiddleware ---
+
+// loggingResponseWriter wraps http.ResponseWriter to capture the status code.
+type loggingResponseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func newLoggingResponseWriter(w http.ResponseWriter) *loggingResponseWriter {
+	// Default status code is 200 OK if WriteHeader is not called
+	return &loggingResponseWriter{w, http.StatusOK}
+}
+
+// WriteHeader captures the status code before writing headers.
+func (lrw *loggingResponseWriter) WriteHeader(code int) {
+	lrw.statusCode = code
+	lrw.ResponseWriter.WriteHeader(code)
+}
+
+// Write captures the status code if WriteHeader hasn't been called yet.
+// This happens when the first call is Write, which implicitly writes StatusOK.
+func (lrw *loggingResponseWriter) Write(b []byte) (int, error) {
+	// The status code is already set by WriteHeader if it was called.
+	// If not, the first Write implicitly sets it to 200 OK.
+	// We captured the default 200 in newLoggingResponseWriter.
+	// WriteHeader call will update it if necessary.
+	return lrw.ResponseWriter.Write(b)
+}
+
+// --- Example CORS Middleware (Very basic - adjust origins as needed) ---
+/*
+func corsMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        // WARNING: "*" is insecure for production. List specific origins.
+        w.Header().Set("Access-Control-Allow-Origin", "*")
+        w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS") // Add PUT, DELETE etc. if needed
+        w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization") // Add custom headers if needed
+
+        // Handle preflight requests
+        if r.Method == http.MethodOptions {
+            w.WriteHeader(http.StatusOK)
+            return
+        }
+
+        next.ServeHTTP(w, r)
+    })
+}
+*/
+--- END OF FILE: internal\api\middleware.go ---
+
+--- START OF FILE: internal\api\router.go ---
+// internal/api/router.go
+package api
+
+import (
+	"net/http"
+
+	"github.com/gorilla/mux"
+	"github.com/kathir-ks/a2a-platform/internal/app"
+	"github.com/kathir-ks/a2a-platform/internal/ws"
+)
+
+// API struct remains the same...
+type API struct {
+	platformService app.PlatformService
+	taskService     app.TaskService
+	agentService    app.AgentService // <-- ADD AgentService
+	toolService     app.ToolService
+	wsManager       ws.Manager
+	// Add other services (AgentService, ToolService) as needed
+}
+
+
+// NewRouter creates and configures the main application router.
+func NewRouter(
+	ps app.PlatformService,
+	ts app.TaskService,
+	as app.AgentService, // Add AgentService parameter
+	tl app.ToolService,  // Add ToolService parameter
+	wsm ws.Manager,
+) *mux.Router {
+	api := &API{ // --- FIX: Initialize added fields ---
+		platformService: ps,
+		taskService:     ts,
+		agentService:    as, // <-- Initialize AgentService
+		toolService:     tl, // <-- Initialize ToolService
+		wsManager:       wsm,
+	} 	
+
+	router := mux.NewRouter()
+
+	// Apply middleware globally
+	// Order matters: Recovery should generally wrap logging and the actual handlers.
+	router.Use(recoveryMiddleware)
+	router.Use(loggingMiddleware)
+	// router.Use(corsMiddleware) // Uncomment and configure if needed
+
+	// Define routes AFTER applying middleware
+	a2aSubrouter := router.PathPrefix("/a2a").Subrouter()
+	a2aSubrouter.HandleFunc("", api.handleA2ARequest).Methods(http.MethodPost)
+	// If you had other /a2a/... routes, they'd go here and inherit middleware
+
+	// WebSocket endpoint (still placeholder)
+	// Using PathPrefix allows middleware to apply to the WS route too
+	wsSubrouter := router.PathPrefix("/ws").Subrouter()
+	wsSubrouter.HandleFunc("", api.handleWebSocket) // Add this later
+
+	// Health check endpoint (good practice, bypasses some A2A logic)
+	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	}).Methods(http.MethodGet)
+
+
+	return router
+}
+--- END OF FILE: internal\api\router.go ---
+
+--- START OF FILE: internal\app\agent_service.go ---
+// internal/app/agent_service.go
+package app
+
+import (
+	"context"
+	"github.com/google/uuid" // For generating Agent IDs
+	"time"
+
+	"github.com/kathir-ks/a2a-platform/internal/models"
+	"github.com/kathir-ks/a2a-platform/internal/repository"
+	"github.com/kathir-ks/a2a-platform/pkg/a2a"
+    log "github.com/sirupsen/logrus"
+)
+
+type agentService struct {
+	repo repository.AgentRepository
+}
+
+// NewAgentService creates a new AgentService.
+func NewAgentService(deps AgentServiceDeps) AgentService {
+	if deps.AgentRepo == nil {
+		panic("AgentService requires a non-nil AgentRepository")
+	}
+	return &agentService{repo: deps.AgentRepo}
+}
+
+// Implement AgentService methods using r.repo...
+func (s *agentService) RegisterAgent(ctx context.Context, card a2a.AgentCard) (*models.Agent, error) {
+    // Basic implementation - generate ID, create model, save
+     agentID := uuid.NewString() // Generate a unique ID
+     now := time.Now().UTC()
+     agentModel := &models.Agent{
+         ID: agentID,
+         AgentCard: models.AgentCard(card), // Convert/cast if needed
+         RegisteredAt: now,
+         LastUpdatedAt: now,
+         IsEnabled: true, // Default to enabled
+     }
+     created, err := s.repo.Create(ctx, agentModel)
+     if err != nil {
+         log.Errorf("Failed to register agent '%s': %v", card.Name, err)
+         return nil, err // Or return a structured error
+     }
+     log.Infof("Registered agent '%s' with ID %s", card.Name, agentID)
+     return created, nil
+}
+
+func (s *agentService) GetAgent(ctx context.Context, agentID string) (*models.Agent, error) {
+	return s.repo.FindByID(ctx, agentID) // Add error mapping if needed
+}
+ func (s *agentService) GetAgentByURL(ctx context.Context, url string) (*models.Agent, error) {
+    return s.repo.FindByURL(ctx, url) // Add error mapping if needed
+}
+// ... implement other methods ...
+--- END OF FILE: internal\app\agent_service.go ---
+
+--- START OF FILE: internal\app\interfaces.go ---
+// internal/app/interfaces.go
+package app
+
+import (
+	"context"
+
+	"github.com/kathir-ks/a2a-platform/internal/models" // Internal data models
+	"github.com/kathir-ks/a2a-platform/pkg/a2a"         // A2A schema types
+	"github.com/kathir-ks/a2a-platform/internal/agentruntime" // Agent client
+	"github.com/kathir-ks/a2a-platform/internal/repository" // Repository interfaces
+    "github.com/kathir-ks/a2a-platform/internal/tools"
+)
+
+// PlatformService orchestrates high-level agent interactions.
+// It's the primary entry point for complex requests like tasks/send
+// that might involve calling other agents.
+type PlatformService interface {
+	// HandleSendTask orchestrates sending a message to a task, which might involve
+	// forwarding the request to an external agent.
+	HandleSendTask(ctx context.Context, params a2a.TaskSendParams) (*a2a.Task, *a2a.JSONRPCError)
+
+	// HandleSendTaskSubscribe orchestrates sending a message and establishing
+	// a streaming subscription. It will likely involve calling the agent runtime client
+	// in a way that supports streaming (if the target agent supports it).
+	// The return channel will emit events (status/artifact updates) or errors.
+	// THIS IS COMPLEX - simplified initial return signature. Actual implementation
+	// will need more robust channel management tied to the WS connection manager.
+	HandleSendTaskSubscribe(ctx context.Context, params a2a.TaskSendParams) (<-chan any, *a2a.JSONRPCError) // Returns channel for events/errors
+
+    // HandleResubscribeTask re-establishes a stream for an existing task.
+    HandleResubscribeTask(ctx context.Context, params a2a.TaskQueryParams) (<-chan any, *a2a.JSONRPCError) // Returns channel for events/errors
+}
+
+// TaskService manages the lifecycle and state of tasks within the platform.
+type TaskService interface {
+	// HandleGetTask retrieves task details based on query parameters.
+	HandleGetTask(ctx context.Context, params a2a.TaskQueryParams) (*a2a.Task, *a2a.JSONRPCError)
+	// HandleCancelTask attempts to cancel a running task.
+	HandleCancelTask(ctx context.Context, params a2a.TaskIdParams) (*a2a.Task, *a2a.JSONRPCError)
+	// HandleSetTaskPushNotification sets or updates push notification settings for a task.
+	HandleSetTaskPushNotification(ctx context.Context, params a2a.TaskPushNotificationConfig) (*a2a.TaskPushNotificationConfig, *a2a.JSONRPCError)
+	// HandleGetTaskPushNotification retrieves push notification settings for a task.
+	HandleGetTaskPushNotification(ctx context.Context, params a2a.TaskIdParams) (*a2a.TaskPushNotificationConfig, *a2a.JSONRPCError)
+
+	// --- Internal methods (potentially called by PlatformService or other internal components) ---
+
+	// GetTaskByID retrieves the internal representation of a task.
+	GetTaskByID(ctx context.Context, taskID string) (*models.Task, *a2a.JSONRPCError)
+	// CreateTask creates a new task record.
+	CreateTask(ctx context.Context, taskData *models.Task) (*models.Task, *a2a.JSONRPCError) // Takes internal model
+	// UpdateTask updates an existing task record (e.g., status, artifacts).
+	UpdateTask(ctx context.Context, taskData *models.Task) (*models.Task, *a2a.JSONRPCError) // Takes internal model
+    // AddTaskHistory records a status transition (if history is enabled).
+    AddTaskHistory(ctx context.Context, taskID string, status a2a.TaskStatus) error
+    // GetTaskHistory retrieves recent status history.
+    GetTaskHistory(ctx context.Context, taskID string, limit int) ([]a2a.TaskStatus, error)
+	// GetTargetAgentURLForTask retrieves the URL of the agent responsible for handling this task.
+	// This is crucial for PlatformService to know where to forward requests.
+	GetTargetAgentURLForTask(ctx context.Context, taskID string) (string, *a2a.JSONRPCError)
+}
+
+// AgentService manages agent definitions registered with the platform.
+type AgentService interface {
+	RegisterAgent(ctx context.Context, card a2a.AgentCard) (*models.Agent, error)
+	GetAgent(ctx context.Context, agentID string) (*models.Agent, error)
+	GetAgentByURL(ctx context.Context, url string) (*models.Agent, error)
+	// ... other agent management methods (ListAgents, UpdateAgent, DeleteAgent)
+}
+
+// ToolService manages tools available on the platform.
+type ToolService interface {
+	RegisterTool(ctx context.Context, tool models.ToolDefinition) error
+	GetToolSchema(ctx context.Context, toolName string) (any, error)
+	ExecuteTool(ctx context.Context, toolName string, params map[string]any) (map[string]any, error)
+	ListTools(ctx context.Context) ([]models.ToolDefinition, error)
+}
+
+// --- Service Dependencies ---
+
+// Services might depend on repositories and other clients/services.
+type TaskServiceDeps struct {
+	TaskRepo repository.TaskRepository
+    // Potentially add a reference to a notification service here later
+}
+
+type PlatformServiceDeps struct {
+	TaskSvc    TaskService // Depends on TaskService
+	AgentRtCli agentruntime.Client // Depends on the client to call external agents
+    // May need AgentService later if more agent info is required during routing
+}
+
+// AgentServiceDeps defines dependencies for AgentService.
+type AgentServiceDeps struct {
+    AgentRepo repository.AgentRepository
+    // Add other dependencies if needed
+}
+
+type ToolServiceDeps struct {
+    ToolRepo repository.ToolRepository // Optional: For persisting tool definitions
+    Registry tools.Registry            // Required: For runtime execution
+}
+--- END OF FILE: internal\app\interfaces.go ---
+
+--- START OF FILE: internal\app\platform_service.go ---
+// internal/app/platform_service.go
+package app
+
+import (
+	"context"
+	"fmt"
+    "time"
+	"encoding/json"
+
+	"github.com/google/uuid" // For generating IDs if needed
+	"github.com/kathir-ks/a2a-platform/internal/agentruntime"
+	"github.com/kathir-ks/a2a-platform/internal/models"
+	"github.com/kathir-ks/a2a-platform/pkg/a2a"
+	log "github.com/sirupsen/logrus"
+)
+
+type platformService struct {
+	taskSvc    TaskService
+	agentRtCli agentruntime.Client
+}
+
+// NewPlatformService creates a new PlatformService implementation.
+func NewPlatformService(deps PlatformServiceDeps) PlatformService {
+	if deps.TaskSvc == nil || deps.AgentRtCli == nil {
+		log.Fatal("PlatformService requires non-nil TaskService and AgentRuntimeClient")
+	}
+	return &platformService{
+		taskSvc:    deps.TaskSvc,
+		agentRtCli: deps.AgentRtCli,
+	}
+}
+
+func (s *platformService) HandleSendTask(ctx context.Context, params a2a.TaskSendParams) (*a2a.Task, *a2a.JSONRPCError) {
+	log.WithFields(log.Fields{"task_id": params.ID, "session_id": params.SessionID}).Info("Handling SendTask request in PlatformService")
+
+	// 1. Determine Target Agent URL
+	targetAgentURL, taskErr := s.taskSvc.GetTargetAgentURLForTask(ctx, params.ID)
+	if taskErr != nil {
+		// Could be TaskNotFound or InternalError from GetTargetAgentURLForTask
+		log.Warnf("Failed to get target agent URL for task %s: %v", params.ID, taskErr)
+		return nil, taskErr
+	}
+	log.Infof("Target agent URL for task %s: %s", params.ID, targetAgentURL)
+
+	// 2. Prepare the request to forward
+	// The incoming request encapsulates the necessary details.
+	// We might generate a *new* request ID for the downstream call.
+	forwardRequestID := uuid.NewString()
+	forwardRequest := a2a.SendTaskRequest{
+		JSONRPCMessage: a2a.JSONRPCMessage{
+			JSONRPC: a2a.JSONRPCVersion,
+			ID:      forwardRequestID, // Use a new ID for tracking the forwarded request
+		},
+		Method: a2a.MethodSendTask,
+		Params: params, // Forward the original params
+	}
+
+	// 3. Update local task status (Optional: Mark as 'working' before sending)
+    // This depends on desired semantics. Let's assume the external agent's response dictates the final state.
+    // We *could* update status here, but need to handle potential failure of the downstream call.
+    // For simplicity now, we'll update *after* getting the response.
+
+	// 4. Send request to Target Agent via Agent Runtime Client
+	log.Infof("Forwarding SendTask request (ID: %s) for task %s to %s", forwardRequestID, params.ID, targetAgentURL)
+	genericForwardRequest := &a2a.JSONRPCRequest{
+	JSONRPCMessage: forwardRequest.JSONRPCMessage,
+	Method:         forwardRequest.Method,
+	Params:         forwardRequest.Params,
+	}
+
+	responseBytes, agentErr := s.agentRtCli.SendRequest(ctx, targetAgentURL, genericForwardRequest) // Pass pointer
+	if agentErr != nil {
+		log.Errorf("Error sending request to agent %s for task %s: %v", targetAgentURL, params.ID, agentErr)
+		// This is an internal error from the platform's perspective (failed communication)
+		// TODO: Should we update the task status to 'failed' here? Requires careful thought.
+		return nil, a2a.NewInternalError(map[string]any{
+			"details": "failed to communicate with target agent",
+			"target": targetAgentURL,
+			"cause": agentErr.Error(),
+			})
+	}
+
+	// 5. Decode Response from Target Agent
+	var agentResponse a2a.SendTaskResponse
+	
+	if err := json.Unmarshal(responseBytes, &agentResponse); err != nil {
+		log.Errorf("Failed to decode response from agent %s for task %s: %v", targetAgentURL, params.ID, err)
+        // TODO: Update task status to 'failed'?
+		return nil, a2a.NewInternalError(map[string]any{
+			"details": "invalid response received from target agent",
+            "target": targetAgentURL,
+			})
+	}
+
+	// Check if the agent returned an error in the JSON-RPC response
+	if agentResponse.Error != nil {
+		log.Warnf("Target agent %s returned error for task %s: [%d] %s", targetAgentURL, params.ID, agentResponse.Error.Code, agentResponse.Error.Message)
+		// Update local task status to failed, potentially using agent's error details
+        now := time.Now().UTC()
+		failMessagePart := models.TextPart{ // Create the concrete part first
+            Type: a2a.PartTypeText,
+            Text: fmt.Sprintf("Agent error: [%d] %s", agentResponse.Error.Code, agentResponse.Error.Message),
+        }
+        failStatus := models.TaskStatus{
+            State: models.TaskStateFailed,
+            Timestamp: &now,
+            Message: &models.Message{
+                Role: a2a.RoleAgent,
+                Parts: []models.Part{failMessagePart}, // Create slice of interface type containing the struct
+            },
+        }
+		taskModel, getErr := s.taskSvc.GetTaskByID(ctx, params.ID)
+		if getErr == nil {
+            taskModel.Status = failStatus
+            _, updateErr := s.taskSvc.UpdateTask(ctx, taskModel) // Update internal task model
+            if updateErr != nil {
+                 log.Errorf("Failed to update task %s to failed status after agent error: %v", params.ID, updateErr)
+            }
+        } else {
+            log.Errorf("Failed to get task %s to update status after agent error: %v", params.ID, getErr)
+        }
+        // Propagate the error from the agent
+		return nil, agentResponse.Error
+	}
+
+    // 6. Agent responded successfully with a Task object
+    if agentResponse.Result == nil {
+        log.Errorf("Target agent %s returned success but nil result for task %s", targetAgentURL, params.ID)
+        // TODO: Update task status to 'failed'? This is unexpected success state.
+		return nil, a2a.NewInternalError(map[string]any{
+			"details": "agent returned success response with no result task data",
+            "target": targetAgentURL,
+			})
+    }
+
+	log.Infof("Received successful task update from agent %s for task %s. New status: %s", targetAgentURL, params.ID, agentResponse.Result.Status.State)
+
+	// Convert the received A2A Task result to our internal model format
+	updatedTaskModel, convErr := models.TaskA2AToModel(agentResponse.Result) // Assign to 2 vars
+	if convErr != nil {
+		log.Errorf("Failed to convert agent response task %s to internal model: %v", agentResponse.Result.ID, convErr)
+		// Decide how to handle - return internal error? Or proceed with potential data loss?
+		// Returning internal error is safer.
+		return nil, a2a.NewInternalError(map[string]string{"details": "failed processing agent response"})
+	}
+    if updatedTaskModel == nil { // Should not happen if convErr is nil, but belt-and-suspenders
+        log.Errorf("Internal consistency error: TaskA2AToModel returned nil model without error for task %s", agentResponse.Result.ID)
+		return nil, a2a.NewInternalError(map[string]string{"details": "internal error processing agent response"})
+    }
+	
+	// 7. Update Local Task State
+	// Use UpdateTask which also handles history
+	finalTaskModel, updateErr := s.taskSvc.UpdateTask(ctx, updatedTaskModel)
+	if updateErr != nil {
+		log.Errorf("Failed to update local task %s after successful agent response: %v", params.ID, updateErr)
+		// Return the agent's successful result, but log the persistence error
+		// This is tricky - the operation succeeded externally but failed internally.
+		// Return the agent result for now, as the task *did* progress.
+		return agentResponse.Result, nil // Or return an internal error? Discuss semantics.
+	}
+
+	// 8. Return the final task state (converted back to A2A type)
+	taskA2A, convErr := models.TaskModelToA2A(finalTaskModel) // Assign to 2 vars
+    if convErr != nil {
+        log.Errorf("Failed to convert final task %s to A2A model for response: %v", finalTaskModel.ID, convErr)
+        // Return internal error as we can't form the correct response
+		return nil, a2a.NewInternalError(map[string]string{"details": "internal error finalizing response"})
+    }
+	return &taskA2A, nil // Return pointer to the converted value, and nil JSONRPC error
+}
+
+
+// HandleSendTaskSubscribe - Placeholder - Complex implementation needed
+func (s *platformService) HandleSendTaskSubscribe(ctx context.Context, params a2a.TaskSendParams) (<-chan any, *a2a.JSONRPCError) {
+	log.Warn("HandleSendTaskSubscribe not implemented")
+    // 1. Check if target agent supports streaming (via AgentService/Capabilities)
+    // 2. Call agent runtime client's streaming method
+    // 3. Set up channels to pipe events back
+    // 4. Coordinate with WebSocket manager (ws.Manager) to send events to the correct client
+	return nil, a2a.NewUnsupportedOperationError("streaming send")
+}
+
+// HandleResubscribeTask - Placeholder - Complex implementation needed
+func (s *platformService) HandleResubscribeTask(ctx context.Context, params a2a.TaskQueryParams) (<-chan any, *a2a.JSONRPCError) {
+	log.Warn("HandleResubscribeTask not implemented")
+    // 1. Find existing task stream/state
+    // 2. Re-establish connection/subscription if necessary (might involve agent runtime client)
+    // 3. Coordinate with WebSocket manager
+	return nil, a2a.NewUnsupportedOperationError("streaming resubscribe")
+}
+
+
+// --- Add AgentService and ToolService implementations similarly ---
+// internal/app/agent_service.go
+// internal/app/tool_service.go
+// These would depend on their respective repositories (repository.AgentRepository, etc.)
+--- END OF FILE: internal\app\platform_service.go ---
+
+--- START OF FILE: internal\app\task_service.go ---
+// internal/app/task_service.go
+package app
+
+import (
+	"context"
+	"database/sql" // Needed for checking specific errors like sql.ErrNoRows
+	"errors"       // Standard error handling
+	"time"
+
+	"github.com/kathir-ks/a2a-platform/internal/models"
+	"github.com/kathir-ks/a2a-platform/internal/repository"
+	"github.com/kathir-ks/a2a-platform/pkg/a2a"
+	log "github.com/sirupsen/logrus"
+)
+
+type taskService struct {
+	repo repository.TaskRepository
+	// Add other dependencies like a notification service later
+}
+
+// NewTaskService creates a new TaskService implementation.
+func NewTaskService(deps TaskServiceDeps) TaskService {
+	if deps.TaskRepo == nil {
+		log.Fatal("TaskService requires a non-nil TaskRepository") // Or handle differently
+	}
+	return &taskService{
+		repo: deps.TaskRepo,
+	}
+}
+
+// --- Public API facing methods ---
+
+func (s *taskService) HandleGetTask(ctx context.Context, params a2a.TaskQueryParams) (*a2a.Task, *a2a.JSONRPCError) {
+	log.WithFields(log.Fields{"task_id": params.ID, "history_len": params.HistoryLength}).Info("Handling GetTask request")
+
+	taskModel, err := s.repo.FindByID(ctx, params.ID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			log.Warnf("Task not found for GetTask: %s", params.ID)
+			return nil, a2a.NewTaskNotFoundError(params.ID)
+		}
+		log.Errorf("Error finding task %s: %v", params.ID, err)
+		return nil, a2a.NewInternalError(map[string]string{"details": "failed to retrieve task"})
+	}
+
+	// Convert internal model to A2A type
+	taskA2A, convErr := models.TaskModelToA2A(taskModel) // Assign to 2 vars
+    if convErr != nil {
+		log.Errorf("Error converting task %s to A2A type: %v", taskModel.ID, convErr)
+		return nil, a2a.NewInternalError(map[string]string{"details": "failed to process task data"})
+    }
+
+    // Fetch history if requested
+    if params.HistoryLength != nil && *params.HistoryLength > 0 {
+       // TODO: Implement history retrieval logic using GetTaskHistory
+       log.Warn("Task history retrieval not fully implemented yet")
+       // history, historyErr := s.GetTaskHistory(ctx, params.ID, *params.HistoryLength)
+       // if historyErr != nil { ... handle error ... }
+       // taskA2A.StatusHistory = history // Assuming Task A2A struct has a place for history
+    }
+
+	return &taskA2A, nil
+}
+
+func (s *taskService) HandleCancelTask(ctx context.Context, params a2a.TaskIdParams) (*a2a.Task, *a2a.JSONRPCError) {
+	log.WithField("task_id", params.ID).Info("Handling CancelTask request")
+
+	taskModel, err := s.repo.FindByID(ctx, params.ID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, a2a.NewTaskNotFoundError(params.ID)
+		}
+		log.Errorf("Error finding task %s for cancellation: %v", params.ID, err)
+		return nil, a2a.NewInternalError(map[string]string{"details": "failed to retrieve task for cancellation"})
+	}
+
+	// Check if task is in a cancelable state
+	currentState := taskModel.Status.State // Assuming Status is stored in the model
+	if !(currentState == models.TaskStateSubmitted || currentState == models.TaskStateWorking || currentState == models.TaskStateInputRequired) {
+		log.Warnf("Task %s is not in a cancelable state (%s)", params.ID, currentState)
+		// Return current task state but with error indicating non-cancelable
+        taskA2A, convErr := models.TaskModelToA2A(taskModel) // Assign to 2 vars
+        if convErr != nil {
+             log.Errorf("Error converting non-cancelable task %s to A2A type: %v", taskModel.ID, convErr)
+             // Return internal error because we can't form the intended response payload
+		    return nil, a2a.NewInternalError(map[string]string{"details": "failed to process task data"})
+        }
+		return &taskA2A, a2a.NewTaskNotCancelableError(params.ID) // Return pointer
+	}
+	
+	// Update status to Canceled
+	now := time.Now().UTC()
+	taskModel.Status = models.TaskStatus{ // Assuming internal TaskStatus model exists
+        State:     models.TaskStateCanceled,
+        Timestamp: &now,
+        // Message: Optionally add a cancellation message
+    }
+    // Add history record
+    statusA2A, convErr := models.TaskStatusModelToA2A(&taskModel.Status)
+	if convErr != nil {
+		log.Errorf("Failed to convert task status for cancellation history %s: %v", taskModel.ID, convErr)
+	} else {
+		if historyErr := s.AddTaskHistory(ctx, taskModel.ID, statusA2A); historyErr != nil {
+			log.Errorf("Failed to add cancellation history for task %s: %v", taskModel.ID, historyErr)
+		}
+	}
+
+	updatedTask, err := s.repo.Update(ctx, taskModel)
+	if err != nil {
+		log.Errorf("Error updating task %s to canceled state: %v", params.ID, err)
+		return nil, a2a.NewInternalError(map[string]string{"details": "failed to update task status"})
+	}
+
+	 taskA2A, convErr := models.TaskModelToA2A(updatedTask) // Assign to 2 vars
+    if convErr != nil {
+         log.Errorf("Error converting updated task %s to A2A type: %v", updatedTask.ID, convErr)
+		return nil, a2a.NewInternalError(map[string]string{"details": "failed to process updated task data"})
+    }
+
+	return &taskA2A, nil // Return pointer
+}
+
+func (s *taskService) HandleSetTaskPushNotification(ctx context.Context, params a2a.TaskPushNotificationConfig) (*a2a.TaskPushNotificationConfig, *a2a.JSONRPCError) {
+	log.WithField("task_id", params.ID).Info("Handling SetTaskPushNotification request")
+
+	// Fetch task to ensure it exists (optional, repo might handle upsert)
+	_, err := s.repo.FindByID(ctx, params.ID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, a2a.NewTaskNotFoundError(params.ID)
+		}
+		log.Errorf("Error finding task %s for setting push notification: %v", params.ID, err)
+		return nil, a2a.NewInternalError(map[string]string{"details": "failed to retrieve task"})
+	}
+
+	// Convert A2A config to internal model representation if necessary
+	configModel, convErr := models.PushNotificationConfigA2AToModel(&params.PushNotificationConfig) // Assign to 2 vars
+    if convErr != nil {
+        log.Errorf("Error converting push config to internal model for task %s: %v", params.ID, convErr)
+		return nil, a2a.NewInvalidParamsError(map[string]string{"details": "invalid push notification config format"}) // Invalid params error likely
+    }
+    if configModel == nil {
+        // Handle case where converter returns nil pointer without error (if possible)
+        log.Errorf("Push config conversion returned nil unexpectedly for task %s", params.ID)
+        return nil, a2a.NewInvalidParamsError(map[string]string{"details": "invalid push notification config format"})
+    }
+
+	if err := s.repo.SetPushConfig(ctx, params.ID, configModel); err != nil {
+		log.Errorf("Error setting push config for task %s: %v", params.ID, err)
+		return nil, a2a.NewInternalError(map[string]string{"details": "failed to save push notification config"})
+	}
+
+	// Return the config that was set (passed in params)
+	return &params, nil
+}
+
+func (s *taskService) HandleGetTaskPushNotification(ctx context.Context, params a2a.TaskIdParams) (*a2a.TaskPushNotificationConfig, *a2a.JSONRPCError) {
+	log.WithField("task_id", params.ID).Info("Handling GetTaskPushNotification request")
+
+	configModel, err := s.repo.GetPushConfig(ctx, params.ID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// It's debatable whether this is a TaskNotFound or just "no config set".
+			// Let's return TaskNotFound for consistency, implying the task itself is the context.
+			log.Warnf("Push config or task not found for GetTaskPushNotification: %s", params.ID)
+			return nil, a2a.NewTaskNotFoundError(params.ID) // Or a different error?
+		}
+		log.Errorf("Error getting push config for task %s: %v", params.ID, err)
+		return nil, a2a.NewInternalError(map[string]string{"details": "failed to retrieve push notification config"})
+	}
+
+	// Check if a config was actually found (repo might return nil model, nil error if allowed)
+	if configModel == nil {
+        log.Warnf("No push config found for task %s, returning empty", params.ID)
+		// Return null result according to JSON-RPC spec for 'not found' scenarios where the main entity (task) exists
+		// Returning TaskNotFound might be misleading if the task *does* exist but has no config.
+        // Let's return an empty successful response (result: null)
+        // Alternatively, define a specific error like "PushConfigNotFound".
+        // For now, let's align with GetTask: if the repo says no rows, it's TaskNotFound.
+        // If repo returns nil model/nil error, then it's truly no config.
+        // Let's assume repo returns sql.ErrNoRows if no config exists.
+        // Thus, the TaskNotFound path above handles this. Reaching here means a config *was* found.
+	}
+
+
+	// Convert internal model back to A2A type
+	configA2A, convErr := models.PushNotificationConfigModelToA2A(configModel) // Assign to 2 vars
+    if convErr != nil {
+        log.Errorf("Error converting push config model to A2A for task %s: %v", params.ID, convErr)
+		return nil, a2a.NewInternalError(map[string]string{"details": "failed processing push notification config"})
+    }
+    if configA2A == nil { // Handle case where converter returns nil pointer without error
+         log.Errorf("Push config conversion to A2A returned nil unexpectedly for task %s", params.ID)
+         return nil, a2a.NewInternalError(map[string]string{"details": "internal error processing push config"})
+    }
+
+	return &a2a.TaskPushNotificationConfig{
+		ID:                     params.ID,
+		PushNotificationConfig: *configA2A, // Dereference pointer here
+	}, nil
+}
+
+// --- Internal Methods Implementations ---
+
+func (s *taskService) GetTaskByID(ctx context.Context, taskID string) (*models.Task, *a2a.JSONRPCError) {
+	taskModel, err := s.repo.FindByID(ctx, taskID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, a2a.NewTaskNotFoundError(taskID)
+		}
+		log.Errorf("Internal error finding task %s: %v", taskID, err)
+		return nil, a2a.NewInternalError(map[string]string{"details": "failed to retrieve task data"})
+	}
+	return taskModel, nil
+}
+
+func (s *taskService) CreateTask(ctx context.Context, taskData *models.Task) (*models.Task, *a2a.JSONRPCError) {
+    // Add initial history record
+    if taskData.Status.State != "" {
+    statusA2A, convErr := models.TaskStatusModelToA2A(&taskData.Status) // Keep 2 variables
+    if convErr != nil {
+        log.Errorf("Failed to convert initial task status for history %s: %v", taskData.ID, convErr)
+    } else {
+        // Pass the statusA2A value directly (no more dereference *)
+        if historyErr := s.AddTaskHistory(ctx, taskData.ID, statusA2A); historyErr != nil {
+            log.Errorf("Failed to add initial history for task %s: %v", taskData.ID, historyErr)
+        }
+    }
+	}
+
+
+	createdTask, err := s.repo.Create(ctx, taskData)
+	if err != nil {
+		// Handle potential duplicate key errors etc.
+		log.Errorf("Internal error creating task %s: %v", taskData.ID, err)
+		return nil, a2a.NewInternalError(map[string]string{"details": "failed to create task record"})
+	}
+	return createdTask, nil
+}
+
+func (s *taskService) UpdateTask(ctx context.Context, taskData *models.Task) (*models.Task, *a2a.JSONRPCError) {
+    // Add history record for the new status
+    if taskData.Status.State != "" {
+		statusA2A, convErr := models.TaskStatusModelToA2A(&taskData.Status) // Keep 2 variables
+		if convErr != nil {
+			 log.Errorf("Failed to convert task status for history %s: %v", taskData.ID, convErr)
+		} else {
+			// Pass the statusA2A value directly (no more dereference *)
+			 if historyErr := s.AddTaskHistory(ctx, taskData.ID, statusA2A); historyErr != nil {
+				 log.Errorf("Failed to add update history for task %s: %v", taskData.ID, historyErr)
+			}
+		}
+	}
+
+
+
+	updatedTask, err := s.repo.Update(ctx, taskData)
+	if err != nil {
+		log.Errorf("Internal error updating task %s: %v", taskData.ID, err)
+		// Could check for sql.ErrNoRows here if Update should fail on non-existent task
+		return nil, a2a.NewInternalError(map[string]string{"details": "failed to update task record"})
+	}
+	return updatedTask, nil
+}
+
+func (s *taskService) AddTaskHistory(ctx context.Context, taskID string, status a2a.TaskStatus) error {
+    // TODO: Check if history is enabled globally or per-agent/task
+    return s.repo.AddHistory(ctx, taskID, status)
+}
+
+func (s *taskService) GetTaskHistory(ctx context.Context, taskID string, limit int) ([]a2a.TaskStatus, error) {
+    // TODO: Check if history is enabled
+    return s.repo.GetHistory(ctx, taskID, limit)
+}
+
+
+func (s *taskService) GetTargetAgentURLForTask(ctx context.Context, taskID string) (string, *a2a.JSONRPCError) {
+	// How is the target agent URL stored? Assume it's part of the Task model for now.
+	taskModel, err := s.repo.FindByID(ctx, taskID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", a2a.NewTaskNotFoundError(taskID)
+		}
+		log.Errorf("Internal error finding task %s for URL lookup: %v", taskID, err)
+		return "", a2a.NewInternalError(map[string]string{"details": "failed to retrieve task data for routing"})
+	}
+
+	if taskModel.TargetAgentURL == "" { // Assuming TargetAgentURL field exists in models.Task
+		log.Errorf("Task %s found but has no target agent URL defined", taskID)
+		return "", a2a.NewInternalError(map[string]string{"details": "task configuration error: missing target agent URL"})
+	}
+
+	return taskModel.TargetAgentURL, nil
+}
+
+// --- Need conversion functions in models package ---
+// e.g., models.TaskModelToA2A(*models.Task) *a2a.Task
+// e.g., models.TaskA2AToModel(*a2a.Task) *models.Task
+// e.g., models.PushNotificationConfigModelToA2A(*models.PushNotificationConfig) *a2a.PushNotificationConfig
+// etc.
+--- END OF FILE: internal\app\task_service.go ---
+
+--- START OF FILE: internal\app\tool_service.go ---
+// internal/app/tool_service.go
+package app
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/kathir-ks/a2a-platform/internal/models"
+	"github.com/kathir-ks/a2a-platform/internal/repository"
+	"github.com/kathir-ks/a2a-platform/internal/tools"
+)
+
+type toolService struct {
+	repo     repository.ToolRepository // Can be nil if not persisting definitions
+	registry tools.Registry
+}
+
+// --- FIX: Add constructor ---
+// NewToolService creates a new ToolService.
+func NewToolService(deps ToolServiceDeps) ToolService { // Implements app.ToolService interface
+	if deps.Registry == nil {
+		panic("ToolService requires a non-nil Registry")
+	}
+	return &toolService{
+		repo:     deps.ToolRepo, // Assign repo (can be nil)
+		registry: deps.Registry,
+	}
+}
+
+// Implement ToolService interface methods using s.registry (and s.repo if needed)
+func (s *toolService) RegisterTool(ctx context.Context, tool models.ToolDefinition) error {
+    // Example: Persist if repo exists
+    // if s.repo != nil {
+    //    _, err := s.repo.Create(ctx, &tool)
+    //    if err != nil { return err }
+    // }
+    // Runtime registration would typically happen via toolRegistry.Register() in main.go
+	return fmt.Errorf("dynamic tool registration via service not fully implemented")
+}
+
+func (s *toolService) GetToolSchema(ctx context.Context, toolName string) (any, error) {
+	executor, err := s.registry.Get(ctx, toolName)
+	if err != nil {
+		return nil, err // Propagate registry error
+	}
+	return executor.GetDefinition().Schema, nil
+}
+
+func (s *toolService) ExecuteTool(ctx context.Context, toolName string, params map[string]any) (map[string]any, error) {
+	executor, err := s.registry.Get(ctx, toolName)
+	if err != nil {
+		return nil, err // Propagate registry error
+	}
+	// Add potential authorization/validation logic here before executing
+	return executor.Execute(ctx, params)
+}
+
+func (s *toolService) ListTools(ctx context.Context) ([]models.ToolDefinition, error) {
+    // Primarily list from the runtime registry
+	return s.registry.List(ctx)
+    // Optionally, merge with or list from s.repo if definitions are also persisted
+}
+--- END OF FILE: internal\app\tool_service.go ---
+
+--- START OF FILE: internal\config\config.go ---
+// internal/config/config.go
+package config
+
+import (
+	"strings"
+	"time"
+
+	log "github.com/sirupsen/logrus"
+	"github.com/spf13/viper"
+)
+
+// Config holds all configuration for the application.
+type Config struct {
+	HTTPPort              int           `mapstructure:"HTTP_PORT"`
+	LogLevel              string        `mapstructure:"LOG_LEVEL"`
+	DatabaseURL           string        `mapstructure:"DATABASE_URL"` // Example: postgres://user:pass@host:port/db?sslmode=disable
+	AgentCallTimeout      time.Duration `mapstructure:"AGENT_CALL_TIMEOUT_SECONDS"`
+	// Add other config fields as needed:
+	// JWTSecret string `mapstructure:"JWT_SECRET"`
+	// MaxHistoryLength int `mapstructure:"MAX_HISTORY_LENGTH"`
+	
+	// --- LLM Configuration ---
+	// Use map for flexibility, or specific fields if only supporting one/two providers
+	LLMProviders map[string]LLMProviderConfig `mapstructure:"LLM_PROVIDERS"`
+	DefaultLLMModel string                    `mapstructure:"DEFAULT_LLM_MODEL"` // e.g., "openai:gpt-4o"
+
+}
+
+
+// LLMProviderConfig holds settings for a specific LLM provider.
+type LLMProviderConfig struct {
+	APIKey string `mapstructure:"API_KEY"`
+	// Add other provider-specific configs like BaseURL, OrgID etc. if needed
+}
+
+// LoadConfig reads configuration from file and environment variables.
+func LoadConfig(configPaths ...string) (*Config, error) {
+	v := viper.New()
+
+	// --- Set Defaults ---
+	v.SetDefault("HTTP_PORT", 8080)
+	v.SetDefault("LOG_LEVEL", "info")
+	v.SetDefault("DATABASE_URL", "sqlite:a2a_platform.db") // Default to SQLite file in current dir
+	v.SetDefault("AGENT_CALL_TIMEOUT_SECONDS", 15)         // Default timeout for calling agents
+	v.SetDefault("DEFAULT_LLM_MODEL", "openai:gpt-4o") // Example default using provider prefix
+    v.SetDefault("LLM_PROVIDERS", map[string]LLMProviderConfig{}) // Default to empty map
+
+	// --- Configure Viper ---
+	v.SetConfigName("config") // Name of config file (without extension)
+	v.SetConfigType("yaml")   // REQUIRED if the config file does not have the extension in the name
+
+	// Add paths to search for the config file
+	v.AddConfigPath(".") // Look in the current directory
+	for _, path := range configPaths {
+		if path != "" {
+			v.AddConfigPath(path)
+		}
+	}
+	// Optional: Add more standard paths like /etc/appname/ or $HOME/.appname
+	// v.AddConfigPath("/etc/a2a-platform/")
+	// v.AddConfigPath("$HOME/.a2a-platform")
+
+	// --- Environment Variables ---
+	v.AutomaticEnv()                                         // Read in environment variables that match
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))       // Replace dots with underscores in env var names (e.g., http.port -> HTTP_PORT)
+	v.AllowEmptyEnv(true)                                    // Allow empty env vars (though defaults usually handle this)
+
+	// --- Read Config File ---
+	err := v.ReadInConfig()
+	if err != nil {
+		// If the config file is not found, it's okay if we have defaults/env vars,
+		// but log it just in case. For other errors, return them.
+		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+			log.Warn("Config file not found, using defaults and environment variables.")
+		} else {
+			log.Errorf("Error reading config file: %v", err)
+			return nil, err
+		}
+	} else {
+		log.Infof("Using config file: %s", v.ConfigFileUsed())
+	}
+
+	// --- Unmarshal into Struct ---
+	var cfg Config
+	err = v.Unmarshal(&cfg)
+	if err != nil {
+		log.Errorf("Unable to decode config into struct: %v", err)
+		return nil, err
+	}
+
+	// --- Post-processing (e.g., convert seconds to duration) ---
+	// Viper doesn't directly unmarshal into time.Duration from a number easily,
+	// so we handle it manually if needed based on the field name/tag.
+	// We used a distinct name `AGENT_CALL_TIMEOUT_SECONDS` which Viper unmarshals
+	// as an int/float. Let's convert it.
+	timeoutSeconds := v.GetInt("AGENT_CALL_TIMEOUT_SECONDS") // Use viper's GetInt
+	cfg.AgentCallTimeout = time.Duration(timeoutSeconds) * time.Second
+
+	loadedProviders := []string{}
+    for name, providerCfg := range cfg.LLMProviders {
+        if providerCfg.APIKey != "" {
+             loadedProviders = append(loadedProviders, name)
+        }
+    }
+    log.Infof("LLM Providers configured with API keys: %v", loadedProviders)
+	
+	// Validate log level
+	_, err = log.ParseLevel(cfg.LogLevel)
+	if err != nil {
+		log.Warnf("Invalid LOG_LEVEL '%s' found in config, defaulting to 'info'", cfg.LogLevel)
+		cfg.LogLevel = "info"
+	}
+
+	log.Infof("Configuration loaded successfully (Port: %d, DB: %s..., LogLevel: %s)", cfg.HTTPPort, cfg.DatabaseURL[:min(15, len(cfg.DatabaseURL))], cfg.LogLevel)
+
+	return &cfg, nil
+}
+
+// Helper function min
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+--- END OF FILE: internal\config\config.go ---
+
+--- START OF FILE: internal\llmclient\interface.go ---
+// internal/llmclient/interface.go
+package llmclient
+
+import (
+	"context"
+)
+
+// Message represents a single message in a chat history.
+type Message struct {
+	Role    string `json:"role"` // e.g., "user", "assistant", "system"
+	Content string `json:"content"`
+}
+
+// GenerationParams holds the parameters for an LLM generation request.
+type GenerationParams struct {
+	Model         string    `json:"model,omitempty"` // Specific model identifier (e.g., "gpt-4o", "claude-3-opus-20240229")
+	SystemPrompt  *string   `json:"system_prompt,omitempty"`
+	Messages      []Message `json:"messages"` // Chat history or single prompt
+	MaxTokens     *int      `json:"max_tokens,omitempty"`
+	Temperature   *float64  `json:"temperature,omitempty"`
+	StopSequences []string  `json:"stop_sequences,omitempty"`
+	// Add other common parameters like top_p, top_k if needed
+    Stream        bool      `json:"stream,omitempty"` // Indicate if streaming response is desired
+}
+
+// GenerationResponse holds the result from a non-streaming LLM call.
+type GenerationResponse struct {
+	Content      string            `json:"content"`         // The generated text
+	ModelUsed    string            `json:"model_used"`      // Actual model that responded
+	FinishReason string            `json:"finish_reason"`   // e.g., "stop", "length", "content_filter"
+	Usage        map[string]int    `json:"usage,omitempty"` // e.g., {"prompt_tokens": 10, "completion_tokens": 50}
+}
+
+// GenerationStreamEvent holds a single event from a streaming LLM call.
+type GenerationStreamEvent struct {
+    Chunk         string            `json:"chunk,omitempty"`         // Delta content chunk
+    IsFinal       bool              `json:"is_final,omitempty"`      // True for the last event in the stream
+	ModelUsed     *string           `json:"model_used,omitempty"`    // Often sent with the final chunk
+	FinishReason  *string           `json:"finish_reason,omitempty"` // Often sent with the final chunk
+	Usage         map[string]int    `json:"usage,omitempty"`         // Often sent with the final chunk
+    Error         error             `json:"-"`                       // Internal error during streaming
+}
+
+
+// Client defines the interface for interacting with an LLM provider.
+type Client interface {
+	// Generate performs a non-streaming text generation request.
+	Generate(ctx context.Context, params GenerationParams) (*GenerationResponse, error)
+
+    // GenerateStream performs a streaming text generation request.
+    // Returns a channel that emits chunks/events. The channel will be closed
+    // when the stream ends or an unrecoverable error occurs.
+	GenerateStream(ctx context.Context, params GenerationParams) (<-chan GenerationStreamEvent, error)
+
+    // ProviderName returns the name of the LLM provider (e.g., "openai", "anthropic").
+    ProviderName() string
+}
+--- END OF FILE: internal\llmclient\interface.go ---
+
+--- START OF FILE: internal\llmclient\openai_client.go ---
+// internal/llmclient/openai_client.go
+package llmclient
+
+import (
+	"context"
+	"errors"
+	"time"
+	
+	// "github.com/sashabaranov/go-openai" // Example using a popular OpenAI client library
+	log "github.com/sirupsen/logrus"
+)
+
+type openAIClient struct {
+	// client *openai.Client // The actual OpenAI SDK client
+	apiKey string
+}
+
+// NewOpenAIClient creates a client for OpenAI.
+// Ensure API Key is handled securely (e.g., from config/env, not hardcoded).
+func NewOpenAIClient(apiKey string) (Client, error) {
+	if apiKey == "" {
+		return nil, errors.New("OpenAI API key is required")
+	}
+	// config := openai.DefaultConfig(apiKey)
+	// Add proxy, org ID etc. if needed from platform config
+	// client := openai.NewClientWithConfig(config)
+
+	return &openAIClient{
+		// client: client,
+		apiKey: apiKey, // Store for potential use, though client lib often handles it
+	}, nil
+}
+
+func (c *openAIClient) ProviderName() string {
+	return "openai"
+}
+
+func (c *openAIClient) Generate(ctx context.Context, params GenerationParams) (*GenerationResponse, error) {
+	log.Infof("Calling OpenAI Generate (Model: %s)...", params.Model)
+    // --- Implementation Details ---
+    // 1. Map llmclient.GenerationParams to the specific OpenAI SDK request struct
+    //    (e.g., openai.ChatCompletionRequest). Handle role mapping, model selection.
+    // 2. Call the OpenAI SDK's CreateChatCompletion method.
+    // 3. Handle potential errors from the SDK (API errors, network issues).
+    // 4. Map the OpenAI SDK response (e.g., openai.ChatCompletionResponse) back to
+    //    llmclient.GenerationResponse. Extract content, model, finish reason, usage.
+
+    // Placeholder implementation:
+	if params.Model == "" { params.Model = "gpt-4o" } // Example default
+    return &GenerationResponse{
+        Content:      "Placeholder OpenAI response.",
+        ModelUsed:    params.Model,
+        FinishReason: "stop",
+        Usage:        map[string]int{"prompt_tokens": 10, "completion_tokens": 5},
+    }, nil
+    // return nil, errors.New("OpenAI Generate not fully implemented")
+}
+
+
+func (c *openAIClient) GenerateStream(ctx context.Context, params GenerationParams) (<-chan GenerationStreamEvent, error) {
+	log.Infof("Calling OpenAI GenerateStream (Model: %s)...", params.Model)
+	if params.Model == "" { params.Model = "gpt-4o" } // Example default
+
+    // --- Implementation Details ---
+    // 1. Map params to OpenAI SDK streaming request struct.
+    // 2. Call the OpenAI SDK's CreateChatCompletionStream method.
+    // 3. Handle initial errors (e.g., invalid request before stream starts).
+    // 4. Create the result channel (chan GenerationStreamEvent).
+    // 5. Start a goroutine that:
+    //    a. Reads from the OpenAI SDK's stream (*openai.ChatCompletionStream).
+    //    b. For each received chunk/event from the SDK:
+    //       i. Maps it to llmclient.GenerationStreamEvent (extracting delta content, etc.).
+    //       ii. Sends the event on the result channel.
+    //    c. Handles stream errors (SDK's Recv() returns error). Send error on channel? Or just close?
+    //    d. Closes the result channel when the SDK stream ends (io.EOF) or on unrecoverable error.
+
+    // Placeholder implementation:
+    resultChan := make(chan GenerationStreamEvent, 10) // Buffered channel
+    go func() {
+        defer close(resultChan) // Ensure channel is closed
+
+        // Simulate streaming events
+        time.Sleep(50 * time.Millisecond)
+        resultChan <- GenerationStreamEvent{Chunk: "Placeholder "}
+        time.Sleep(50 * time.Millisecond)
+        resultChan <- GenerationStreamEvent{Chunk: "OpenAI "}
+        time.Sleep(50 * time.Millisecond)
+        resultChan <- GenerationStreamEvent{Chunk: "stream response."}
+        time.Sleep(50 * time.Millisecond)
+        // Final event with metadata
+        finalReason := "stop"
+        resultChan <- GenerationStreamEvent{
+            IsFinal:      true,
+            FinishReason: &finalReason,
+            ModelUsed:    &params.Model,
+            Usage:        map[string]int{"prompt_tokens": 10, "completion_tokens": 5},
+        }
+    }()
+
+    return resultChan, nil
+    // return nil, errors.New("OpenAI GenerateStream not fully implemented")
+}
+
+// You would need similar files for other providers (anthropic_client.go, gemini_client.go, etc.)
+--- END OF FILE: internal\llmclient\openai_client.go ---
+
+--- START OF FILE: internal\models\conversion.go ---
+// internal/models/conversion.go
+package models
+
+import (
+	"encoding/json"
+	"fmt" // <-- Import fmt package
+	"time"
+
+	"github.com/kathir-ks/a2a-platform/pkg/a2a"
+	log "github.com/sirupsen/logrus"
+)
+
+// TaskModelToA2A converts internal Task model to A2A Task type.
+// Returns the A2A Task struct value and an error if conversion fails.
+func TaskModelToA2A(model *Task) (a2a.Task, error) {
+	if model == nil {
+		return a2a.Task{}, fmt.Errorf("cannot convert nil models.Task")
+	}
+
+	a2aStatus, err := TaskStatusModelToA2A(&model.Status) // Convert status
+	if err != nil {
+		return a2a.Task{}, fmt.Errorf("failed to convert task status for task %s: %w", model.ID, err)
+	}
+
+	a2aTask := a2a.Task{
+		ID:        model.ID,
+		SessionID: model.SessionID,
+		Status:    a2aStatus, // Assign the converted struct value
+		Metadata:  model.Metadata,
+	}
+
+	// Convert artifacts slice
+	if model.Artifacts != nil {
+		a2aTask.Artifacts = make([]a2a.Artifact, 0, len(model.Artifacts))
+		for _, artModel := range model.Artifacts {
+			// Assume ArtifactModelToA2A now returns (a2a.Artifact, error)
+			a2aArt, artErr := ArtifactModelToA2A(&artModel)
+			if artErr != nil {
+				// Log error but potentially continue? Or fail entire conversion?
+				log.Warnf("Failed to convert artifact during task %s conversion: %v", model.ID, artErr)
+				// Let's skip the failed artifact for now
+				continue
+				// return a2a.Task{}, fmt.Errorf("failed to convert artifact for task %s: %w", model.ID, artErr) // Option to fail hard
+			}
+			a2aTask.Artifacts = append(a2aTask.Artifacts, a2aArt)
+		}
+	}
+	return a2aTask, nil
+}
+
+// TaskA2AToModel converts A2A Task type to internal Task model.
+// Note: This usually only updates parts of the model (like status, artifacts).
+// It's less likely to return an error unless the input is fundamentally malformed.
+func TaskA2AToModel(a2aTask *a2a.Task) (*Task, error) {
+	if a2aTask == nil {
+		return nil, fmt.Errorf("cannot convert nil a2a.Task")
+	}
+
+	// Assume TaskStatusA2AToModel now returns (*TaskStatus, error)
+	modelStatus, statusErr := TaskStatusA2AToModel(&a2aTask.Status)
+	if statusErr != nil {
+		return nil, fmt.Errorf("failed to convert task status from a2a: %w", statusErr)
+	}
+	if modelStatus == nil { // Handle case where converter returns nil pointer on non-fatal issue
+		return nil, fmt.Errorf("task status conversion resulted in nil")
+	}
+
+
+	model := &Task{
+		ID:        a2aTask.ID,
+		SessionID: a2aTask.SessionID,
+		Status:    *modelStatus, // Dereference the pointer
+		Metadata:  a2aTask.Metadata,
+	}
+
+	// Convert artifacts slice
+	if a2aTask.Artifacts != nil {
+		model.Artifacts = make([]Artifact, 0, len(a2aTask.Artifacts))
+		for _, a2aArt := range a2aTask.Artifacts {
+			// Assume ArtifactA2AToModel returns (*Artifact, error)
+			modelArt, artErr := ArtifactA2AToModel(&a2aArt)
+			if artErr != nil {
+				log.Warnf("Failed to convert artifact from a2a during task %s conversion: %v", a2aTask.ID, artErr)
+				continue // Skip bad artifact
+				// return nil, fmt.Errorf("failed to convert artifact from a2a: %w", artErr) // Fail hard
+			}
+			if modelArt != nil { // Check if conversion was successful
+				model.Artifacts = append(model.Artifacts, *modelArt)
+			}
+		}
+	}
+
+	// Fields like TargetAgentURL, CreatedAt etc., are NOT typically set from A2A Task object
+	return model, nil
+}
+
+
+// TaskStatusModelToA2A converts internal TaskStatus to A2A TaskStatus.
+// Returns the struct value and error.
+func TaskStatusModelToA2A(model *TaskStatus) (a2a.TaskStatus, error) {
+	if model == nil {
+		return a2a.TaskStatus{}, fmt.Errorf("cannot convert nil models.TaskStatus")
+	}
+
+	// Assume MessageModelToA2A returns (*a2a.Message, error)
+	a2aMessage, msgErr := MessageModelToA2A(model.Message)
+	if msgErr != nil {
+		return a2a.TaskStatus{}, fmt.Errorf("failed to convert message in task status: %w", msgErr)
+	}
+
+	ts := a2a.TaskStatus{
+		State:     a2a.TaskState(model.State), // Cast string type
+		Message:   a2aMessage, // Assign pointer directly
+		Timestamp: model.Timestamp,
+	}
+	if model.Timestamp != nil && model.Timestamp.IsZero() {
+		ts.Timestamp = nil
+	}
+	return ts, nil
+}
+
+// TaskStatusA2AToModel converts A2A TaskStatus to internal TaskStatus pointer and error.
+func TaskStatusA2AToModel(a2aStatus *a2a.TaskStatus) (*TaskStatus, error) {
+	if a2aStatus == nil {
+		return nil, fmt.Errorf("cannot convert nil a2a.TaskStatus")
+	}
+
+	now := time.Now().UTC()
+	ts := a2aStatus.Timestamp
+	if ts == nil || ts.IsZero() {
+		ts = &now
+	}
+
+	// Assume MessageA2AToModel returns (*Message, error)
+	modelMessage, msgErr := MessageA2AToModel(a2aStatus.Message)
+	if msgErr != nil {
+		return nil, fmt.Errorf("failed to convert message from a2a task status: %w", msgErr)
+	}
+
+	return &TaskStatus{
+		State:     TaskState(a2aStatus.State),
+		Message:   modelMessage, // Assign pointer directly
+		Timestamp: ts,
+	}, nil
+}
+
+// MessageModelToA2A converts internal Message to A2A Message pointer and error.
+func MessageModelToA2A(model *Message) (*a2a.Message, error) {
+	if model == nil {
+		return nil, nil // It's okay for a message to be nil, not an error
+	}
+	a2aMsg := &a2a.Message{
+		Role:     model.Role,
+		Metadata: model.Metadata,
+		Parts:    make([]any, 0, len(model.Parts)),
+	}
+	for _, pModel := range model.Parts {
+		// Assume PartModelToA2A returns (any, error)
+		a2aPart, partErr := PartModelToA2A(pModel)
+		if partErr != nil {
+			return nil, fmt.Errorf("failed to convert part in message: %w", partErr)
+		}
+		if a2aPart != nil {
+			a2aMsg.Parts = append(a2aMsg.Parts, a2aPart)
+		}
+	}
+	return a2aMsg, nil
+}
+
+// MessageA2AToModel converts A2A Message to internal Message pointer and error.
+func MessageA2AToModel(a2aMsg *a2a.Message) (*Message, error) {
+	if a2aMsg == nil {
+		return nil, nil // Okay for message to be nil
+	}
+	model := &Message{
+		Role:     a2aMsg.Role,
+		Metadata: a2aMsg.Metadata,
+		Parts:    make([]Part, 0, len(a2aMsg.Parts)),
+	}
+	for _, a2aPartAny := range a2aMsg.Parts {
+		// Assume PartA2AToModel returns (Part, error)
+		modelPart, partErr := PartA2AToModel(a2aPartAny)
+		if partErr != nil {
+			return nil, fmt.Errorf("failed to convert part from a2a message: %w", partErr)
+		}
+		if modelPart != nil {
+			model.Parts = append(model.Parts, modelPart)
+		}
+	}
+	return model, nil
+}
+
+// ArtifactModelToA2A converts internal Artifact to A2A Artifact value and error.
+func ArtifactModelToA2A(model *Artifact) (a2a.Artifact, error) {
+	if model == nil {
+		return a2a.Artifact{}, fmt.Errorf("cannot convert nil models.Artifact")
+	}
+	a2aArt := a2a.Artifact{
+		Name:        model.Name,
+		Description: model.Description,
+		Index:       model.Index,
+		Append:      model.Append,
+		LastChunk:   model.LastChunk,
+		Metadata:    model.Metadata,
+		Parts:       make([]any, 0, len(model.Parts)),
+	}
+	for _, pModel := range model.Parts {
+		a2aPart, partErr := PartModelToA2A(pModel)
+		if partErr != nil {
+			return a2a.Artifact{}, fmt.Errorf("failed to convert part in artifact: %w", partErr)
+		}
+		if a2aPart != nil {
+			a2aArt.Parts = append(a2aArt.Parts, a2aPart)
+		}
+	}
+	return a2aArt, nil
+}
+
+// ArtifactA2AToModel converts A2A Artifact to internal Artifact pointer and error.
+func ArtifactA2AToModel(a2aArt *a2a.Artifact) (*Artifact, error) {
+	if a2aArt == nil {
+		return nil, fmt.Errorf("cannot convert nil a2a.Artifact")
+	}
+	model := &Artifact{
+		Name:        a2aArt.Name,
+		Description: a2aArt.Description,
+		Index:       a2aArt.Index,
+		Append:      a2aArt.Append,
+		LastChunk:   a2aArt.LastChunk,
+		Metadata:    a2aArt.Metadata,
+		Parts:       make([]Part, 0, len(a2aArt.Parts)),
+	}
+	for _, a2aPartAny := range a2aArt.Parts {
+		modelPart, partErr := PartA2AToModel(a2aPartAny)
+		if partErr != nil {
+			return nil, fmt.Errorf("failed to convert part from a2a artifact: %w", partErr)
+		}
+		if modelPart != nil {
+			model.Parts = append(model.Parts, modelPart)
+		}
+	}
+	return model, nil
+}
+
+
+// PartModelToA2A converts internal Part interface to A2A part (map[string]any) and error.
+func PartModelToA2A(model Part) (any, error) {
+	if model == nil {
+		return nil, nil // Nil part is okay
+	}
+	bytes, err := json.Marshal(model)
+	if err != nil {
+		log.Errorf("Failed to marshal model part: %v", err)
+		return nil, fmt.Errorf("failed to marshal model part: %w", err)
+	}
+	var resultMap map[string]any
+	err = json.Unmarshal(bytes, &resultMap)
+	if err != nil {
+		log.Errorf("Failed to unmarshal model part to map: %v", err)
+		return nil, fmt.Errorf("failed to unmarshal model part to map: %w", err)
+	}
+	return resultMap, nil
+}
+
+// PartA2AToModel converts A2A part (map[string]any or specific struct) to internal Part interface and error.
+func PartA2AToModel(a2aPartAny any) (Part, error) {
+	if a2aPartAny == nil {
+		return nil, nil // Nil part is okay
+	}
+
+	bytes, err := json.Marshal(a2aPartAny)
+	if err != nil {
+		log.Errorf("Failed to marshal A2A part for conversion: %v", err)
+		return nil, fmt.Errorf("failed to marshal A2A part: %w", err)
+	}
+
+	var typeFinder struct { Type string `json:"type"` }
+	if err := json.Unmarshal(bytes, &typeFinder); err != nil {
+		log.Errorf("Failed to determine type of A2A part: %v", err)
+		// Try decoding as just text if type is missing? Risky.
+		return nil, fmt.Errorf("cannot determine type of A2A part: %w", err)
+	}
+
+	switch typeFinder.Type {
+	case a2a.PartTypeText:
+		var part TextPart
+		if err := json.Unmarshal(bytes, &part); err != nil {
+			log.Errorf("Failed to unmarshal A2A TextPart: %v", err)
+			return nil, fmt.Errorf("failed to decode A2A TextPart: %w", err)
+		}
+		return part, nil
+	case a2a.PartTypeFile:
+		var part FilePart
+		if err := json.Unmarshal(bytes, &part); err != nil {
+			log.Errorf("Failed to unmarshal A2A FilePart: %v", err)
+			return nil, fmt.Errorf("failed to decode A2A FilePart: %w", err)
+		}
+		// Add FileContent conversion logic if needed
+		return part, nil
+	case a2a.PartTypeData:
+		var part DataPart
+		if err := json.Unmarshal(bytes, &part); err != nil {
+			log.Errorf("Failed to unmarshal A2A DataPart: %v", err)
+			return nil, fmt.Errorf("failed to decode A2A DataPart: %w", err)
+		}
+		return part, nil
+	default:
+		log.Warnf("Unknown A2A part type encountered: %s", typeFinder.Type)
+		return nil, fmt.Errorf("unknown A2A part type '%s'", typeFinder.Type)
+	}
+}
+
+
+// --- Other Converters (simplified, add error returns if needed) ---
+
+func PushNotificationConfigModelToA2A(model *PushNotificationConfig) (*a2a.PushNotificationConfig, error) {
+	if model == nil { return nil, nil }
+	authA2A, err := AuthenticationInfoModelToA2A(model.Authentication)
+	if err != nil {
+		return nil, fmt.Errorf("failed converting auth info for push config: %w", err)
+	}
+	return &a2a.PushNotificationConfig{
+		URL:            model.URL,
+		Token:          model.Token,
+		Authentication: authA2A,
+	}, nil
+}
+
+func PushNotificationConfigA2AToModel(a2aConf *a2a.PushNotificationConfig) (*PushNotificationConfig, error) {
+	if a2aConf == nil { return nil, nil }
+	authModel, err := AuthenticationInfoA2AToModel(a2aConf.Authentication)
+	if err != nil {
+		return nil, fmt.Errorf("failed converting auth info from a2a push config: %w", err)
+	}
+	return &PushNotificationConfig{
+		URL:            a2aConf.URL,
+		Token:          a2aConf.Token,
+		Authentication: authModel,
+	}, nil
+}
+
+func AuthenticationInfoModelToA2A(model *AuthenticationInfo) (*a2a.AuthenticationInfo, error) {
+	if model == nil { return nil, nil }
+	// Direct mapping assumed safe here, add validation/error if needed
+	return &a2a.AuthenticationInfo{
+		Schemes:     model.Schemes,
+		Credentials: model.Credentials,
+	}, nil
+}
+
+func AuthenticationInfoA2AToModel(a2aAuth *a2a.AuthenticationInfo) (*AuthenticationInfo, error) {
+	if a2aAuth == nil { return nil, nil }
+	// Direct mapping assumed safe here, add validation/error if needed
+	return &AuthenticationInfo{
+		Schemes:     a2aAuth.Schemes,
+		Credentials: a2aAuth.Credentials,
+	}, nil
+}
+--- END OF FILE: internal\models\conversion.go ---
+
+--- START OF FILE: internal\models\models.go ---
+// internal/models/models.go
+package models
+
+import (
+	"database/sql/driver"
+	"encoding/json"
+	"errors"
+	"time"
+
+	"github.com/kathir-ks/a2a-platform/pkg/a2a" // Need A2A types for conversion
+)
+
+// --- Base Enum Types (Internal Representation) ---
+// Using the same strings as a2a for simplicity, but could be different
+type TaskState string
+
+const (
+	TaskStateSubmitted    TaskState = "submitted"
+	TaskStateWorking      TaskState = "working"
+	TaskStateInputRequired TaskState = "input-required"
+	TaskStateCompleted    TaskState = "completed"
+	TaskStateCanceled     TaskState = "canceled"
+	TaskStateFailed       TaskState = "failed"
+	TaskStateUnknown      TaskState = "unknown"
+)
+
+// --- Core Models ---
+
+// Agent represents an agent registered on the platform.
+// Might have DB tags if using an ORM like GORM.
+type Agent struct {
+	ID                 string    `json:"id" gorm:"primaryKey"` // Platform's internal ID for the agent
+	AgentCard          AgentCard `json:"agent_card" gorm:"type:jsonb"` // Store the A2A AgentCard as JSON
+	RegisteredAt       time.Time `json:"registered_at" gorm:"autoCreateTime"`
+	LastUpdatedAt      time.Time `json:"last_updated_at" gorm:"autoUpdateTime"`
+	OwnerID            string    `json:"owner_id,omitempty"` // Optional: User ID who registered it
+	IsEnabled          bool      `json:"is_enabled"`
+	// Add other platform-specific fields if needed
+}
+
+// Task represents the internal state of a task.
+type Task struct {
+	ID               string               `json:"id" gorm:"primaryKey"` // A2A Task ID
+	SessionID        *string              `json:"session_id,omitempty" gorm:"index"`
+	Status           TaskStatus           `json:"status" gorm:"type:jsonb"` // Current status stored as JSON
+	TargetAgentURL   string               `json:"target_agent_url"`         // URL of the agent handling this task
+	TargetAgentID    string               `json:"target_agent_id"`          // Platform ID of the target agent
+	PushConfig       *PushNotificationConfig `json:"push_config,omitempty" gorm:"type:jsonb"` // Optional Push config stored as JSON
+	Artifacts        []Artifact           `json:"artifacts,omitempty" gorm:"type:jsonb"` // Store artifacts as JSON array
+	Metadata         Metadata             `json:"metadata,omitempty" gorm:"type:jsonb"`
+	CreatedAt        time.Time            `json:"created_at" gorm:"autoCreateTime"`
+	LastUpdatedAt    time.Time            `json:"last_updated_at" gorm:"autoUpdateTime"`
+	// Potentially add a field for the requesting user/agent ID
+}
+
+// TaskStatus represents the internal structure for task status (storable as JSON).
+type TaskStatus struct {
+	State     TaskState  `json:"state"`
+	Message   *Message   `json:"message,omitempty"` // Stored as JSON sub-document
+	Timestamp *time.Time `json:"timestamp,omitempty"`
+}
+
+// Message represents the internal structure for messages (storable as JSON).
+type Message struct {
+	Role     string `json:"role"` // "user" or "agent"
+	Parts    []Part `json:"parts"`    // Slice of Part interfaces (see below)
+	Metadata Metadata `json:"metadata,omitempty"`
+}
+
+// Artifact represents the internal structure for artifacts (storable as JSON).
+type Artifact struct {
+	Name        *string  `json:"name,omitempty"`
+	Description *string  `json:"description,omitempty"`
+	Parts       []Part   `json:"parts"`
+	Index       int      `json:"index,omitempty"`
+	Append      *bool    `json:"append,omitempty"`
+	LastChunk   *bool    `json:"lastChunk,omitempty"`
+	Metadata    Metadata `json:"metadata,omitempty"`
+}
+
+// Part represents a component of a Message or Artifact.
+// We use specific structs here for type safety internally.
+// JSON marshalling/unmarshalling needs custom handling if storing Parts directly.
+// Often, the containing struct (Message, Artifact) is stored as a single JSON blob,
+// relying on the `pkg/a2a` definitions during conversion.
+type Part interface {
+    GetType() string
+}
+
+type TextPart struct {
+	Type     string   `json:"type"` // "text"
+	Text     string   `json:"text"`
+	Metadata Metadata `json:"metadata,omitempty"`
+}
+func (p TextPart) GetType() string { return p.Type }
+
+
+type FilePart struct {
+	Type     string      `json:"type"` // "file"
+	File     FileContent `json:"file"`
+	Metadata Metadata    `json:"metadata,omitempty"`
+}
+func (p FilePart) GetType() string { return p.Type }
+
+type DataPart struct {
+	Type     string   `json:"type"` // "data"
+	Data     Metadata `json:"data"` // Use Metadata map[string]any for data
+	Metadata Metadata `json:"metadata,omitempty"`
+}
+func (p DataPart) GetType() string { return p.Type }
+
+
+// FileContent is the internal representation.
+type FileContent struct {
+	Name     *string `json:"name,omitempty"`
+	MimeType *string `json:"mimeType,omitempty"`
+	Bytes    *string `json:"bytes,omitempty"` // Base64 encoded string
+	URI      *string `json:"uri,omitempty"`
+}
+
+
+// PushNotificationConfig internal representation.
+type PushNotificationConfig struct {
+	URL            string              `json:"url"`
+	Token          *string             `json:"token,omitempty"`
+	Authentication *AuthenticationInfo `json:"authentication,omitempty"`
+}
+
+// AuthenticationInfo internal representation.
+type AuthenticationInfo struct {
+	Schemes     []string `json:"schemes"`
+	Credentials *string  `json:"credentials,omitempty"`
+}
+
+// AgentCard internal representation (often just the A2A struct embedded or as JSON).
+// Use the a2a type directly if no internal changes are needed.
+type AgentCard a2a.AgentCard // Embedding or use a2a.AgentCard directly
+
+// Metadata is a helper type for handling JSON metadata maps.
+type Metadata map[string]any
+
+// --- JSON Marshaling/Unmarshaling for JSONB ---
+// Implement Scan and Value for types stored as JSONB in the database.
+
+// Value implements the driver.Valuer interface for Metadata.
+func (m Metadata) Value() (driver.Value, error) {
+	if m == nil {
+		return json.Marshal(nil) // Store as JSON null
+	}
+	return json.Marshal(m)
+}
+
+// Scan implements the sql.Scanner interface for Metadata.
+func (m *Metadata) Scan(value interface{}) error {
+	bytes, ok := value.([]byte)
+	if !ok {
+		return errors.New("type assertion to []byte failed for Metadata")
+	}
+	// Handle JSON null specifically if stored that way
+	if string(bytes) == "null" {
+		*m = nil
+		return nil
+	}
+	return json.Unmarshal(bytes, m)
+}
+
+
+// Implement Value/Scan for other JSONB types: AgentCard, TaskStatus, Artifacts array, PushConfig etc.
+// Example for TaskStatus:
+func (ts TaskStatus) Value() (driver.Value, error) {
+	return json.Marshal(ts)
+}
+func (ts *TaskStatus) Scan(value interface{}) error {
+	bytes, ok := value.([]byte)
+	if !ok { return errors.New("type assertion to []byte failed for TaskStatus") }
+	if string(bytes) == "null" { return nil } // Handle null if necessary
+	return json.Unmarshal(bytes, ts)
+}
+
+// Example for []Artifact:
+type Artifacts []Artifact // Define alias for slice
+func (a Artifacts) Value() (driver.Value, error) {
+	if a == nil { return json.Marshal(nil) }
+	return json.Marshal(a)
+}
+func (a *Artifacts) Scan(value interface{}) error {
+	bytes, ok := value.([]byte)
+	if !ok { return errors.New("type assertion to []byte failed for Artifacts") }
+	if string(bytes) == "null" { *a = nil; return nil }
+	return json.Unmarshal(bytes, a)
+}
+
+// Implement similarly for AgentCard, PushNotificationConfig, etc. if using JSONB
+
+
+// --- Tool Definition ---
+type ToolDefinition struct {
+    Name        string `json:"name" gorm:"primaryKey"`
+    Description string `json:"description"`
+    Schema      Metadata `json:"schema" gorm:"type:jsonb"` // Input/Output schema as JSON
+    // Add fields like creator, tags etc. if needed
+}
+--- END OF FILE: internal\models\models.go ---
+
+--- START OF FILE: internal\repository\repository.go ---
+// internal/repository/repository.go
+package repository
+
+import (
+	"context"
+
+	"github.com/kathir-ks/a2a-platform/internal/models" // Internal models
+	"github.com/kathir-ks/a2a-platform/pkg/a2a"         // For TaskStatus history
+)
+
+// TaskRepository defines the persistence operations for Tasks.
+type TaskRepository interface {
+	// Create saves a new task.
+	Create(ctx context.Context, task *models.Task) (*models.Task, error)
+	// Update modifies an existing task (typically status, artifacts, push config).
+	Update(ctx context.Context, task *models.Task) (*models.Task, error)
+	// FindByID retrieves a task by its ID. Should return a specific error
+	// (e.g., sql.ErrNoRows or a custom ErrNotFound) if not found.
+	FindByID(ctx context.Context, id string) (*models.Task, error)
+	// FindBySessionID retrieves tasks associated with a session (optional).
+	FindBySessionID(ctx context.Context, sessionID string) ([]*models.Task, error)
+	// SetPushConfig saves or updates the push notification config for a task.
+	SetPushConfig(ctx context.Context, taskID string, config *models.PushNotificationConfig) error
+	// GetPushConfig retrieves the push notification config for a task.
+	// Should return an error compatible with sql.ErrNoRows if not found.
+	GetPushConfig(ctx context.Context, taskID string) (*models.PushNotificationConfig, error)
+    // AddHistory appends a status entry to the task's history log.
+    AddHistory(ctx context.Context, taskID string, status a2a.TaskStatus) error
+    // GetHistory retrieves the last N status entries for a task.
+    GetHistory(ctx context.Context, taskID string, limit int) ([]a2a.TaskStatus, error)
+	// Delete (optional)
+	// Delete(ctx context.Context, id string) error
+}
+
+// AgentRepository defines persistence operations for Agents.
+type AgentRepository interface {
+	Create(ctx context.Context, agent *models.Agent) (*models.Agent, error)
+	Update(ctx context.Context, agent *models.Agent) (*models.Agent, error)
+	FindByID(ctx context.Context, id string) (*models.Agent, error)
+	FindByURL(ctx context.Context, url string) (*models.Agent, error)
+	List(ctx context.Context, limit, offset int) ([]*models.Agent, error)
+	// Delete(ctx context.Context, id string) error
+    // SetEnabled(ctx context.Context, id string, isEnabled bool) error
+}
+
+// ToolRepository defines persistence operations for Tools.
+type ToolRepository interface {
+    Create(ctx context.Context, tool *models.ToolDefinition) (*models.ToolDefinition, error)
+    FindByName(ctx context.Context, name string) (*models.ToolDefinition, error)
+    List(ctx context.Context, limit, offset int) ([]*models.ToolDefinition, error)
+    // Delete(ctx context.Context, name string) error
+}
+
+// Add other repository interfaces as needed (e.g., UserRepository)
+--- END OF FILE: internal\repository\repository.go ---
+
+--- START OF FILE: internal\repository\memory\agent_repo.go ---
+// internal/repository/memory/agent_repo.go
+package memory
+
+import (
+	"context"
+	"encoding/json"
+	"sort"
+	"sync"
+    "time"
+
+	"github.com/kathir-ks/a2a-platform/internal/models"
+	"github.com/kathir-ks/a2a-platform/internal/repository"
+	log "github.com/sirupsen/logrus"
+)
+
+type memoryAgentRepository struct {
+	mu      sync.RWMutex
+	agents  map[string]*models.Agent // agentID -> Agent
+	urlMap  map[string]string      // agent URL -> agentID (for FindByURL)
+}
+
+// NewMemoryAgentRepository creates a new in-memory agent repository.
+func NewMemoryAgentRepository() repository.AgentRepository {
+	return &memoryAgentRepository{
+		agents: make(map[string]*models.Agent),
+		urlMap: make(map[string]string),
+	}
+}
+
+// deepCopyAgent creates a deep copy.
+func deepCopyAgent(original *models.Agent) (*models.Agent, error) {
+	if original == nil {
+		return nil, nil
+	}
+	cpy := &models.Agent{}
+	bytes, err := json.Marshal(original)
+	if err != nil {
+		return nil, err
+	}
+	err = json.Unmarshal(bytes, cpy)
+	if err != nil {
+		return nil, err
+	}
+	return cpy, nil
+}
+
+func (r *memoryAgentRepository) Create(ctx context.Context, agent *models.Agent) (*models.Agent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.agents[agent.ID]; exists {
+		return nil, ErrAlreadyExists
+	}
+    // Check URL uniqueness if required by the platform
+    if agent.AgentCard.URL != "" {
+         if _, urlExists := r.urlMap[agent.AgentCard.URL]; urlExists {
+             return nil, ErrAlreadyExists // Or a more specific URL conflict error
+         }
+    }
+
+	agentCopy, err := deepCopyAgent(agent)
+	if err != nil {
+		log.Errorf("MemoryRepo: Failed to deep copy agent on create %s: %v", agent.ID, err)
+		return nil, err
+	}
+     if agentCopy.RegisteredAt.IsZero() {
+        agentCopy.RegisteredAt = time.Now().UTC()
+    }
+    agentCopy.LastUpdatedAt = agentCopy.RegisteredAt
+    // Default IsEnabled? Let's default to true
+    agentCopy.IsEnabled = true
+
+	r.agents[agent.ID] = agentCopy
+    if agentCopy.AgentCard.URL != "" {
+	    r.urlMap[agentCopy.AgentCard.URL] = agent.ID
+    }
+	log.Debugf("MemoryRepo: Created agent %s (URL: %s)", agent.ID, agent.AgentCard.URL)
+
+	return deepCopyAgent(agentCopy)
+}
+
+func (r *memoryAgentRepository) Update(ctx context.Context, agent *models.Agent) (*models.Agent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	existingAgent, exists := r.agents[agent.ID]
+	if !exists {
+		return nil, ErrNotFound
+	}
+
+    // Check for URL change and potential conflict
+    newURL := agent.AgentCard.URL
+    oldURL := existingAgent.AgentCard.URL
+    if newURL != oldURL {
+        // Check if new URL conflicts with another agent
+        if existingAgentID, urlExists := r.urlMap[newURL]; urlExists && existingAgentID != agent.ID {
+             return nil, ErrAlreadyExists // Or a URL conflict error
+        }
+    }
+
+	agentCopy, err := deepCopyAgent(agent)
+	if err != nil {
+		log.Errorf("MemoryRepo: Failed to deep copy agent on update %s: %v", agent.ID, err)
+		return nil, err
+	}
+    // Preserve registration time, update other fields
+    agentCopy.RegisteredAt = existingAgent.RegisteredAt
+    agentCopy.LastUpdatedAt = time.Now().UTC()
+
+	r.agents[agent.ID] = agentCopy
+
+    // Update URL map if necessary
+    if newURL != oldURL {
+        if oldURL != "" {
+            delete(r.urlMap, oldURL) // Remove old mapping
+        }
+        if newURL != "" {
+            r.urlMap[newURL] = agent.ID // Add new mapping
+        }
+    }
+
+	log.Debugf("MemoryRepo: Updated agent %s (URL: %s)", agent.ID, agent.AgentCard.URL)
+	return deepCopyAgent(agentCopy)
+}
+
+func (r *memoryAgentRepository) FindByID(ctx context.Context, id string) (*models.Agent, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	agent, exists := r.agents[id]
+	if !exists {
+		return nil, ErrNotFound
+	}
+	log.Debugf("MemoryRepo: Found agent %s by ID", id)
+	return deepCopyAgent(agent)
+}
+
+func (r *memoryAgentRepository) FindByURL(ctx context.Context, url string) (*models.Agent, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	agentID, urlMapped := r.urlMap[url]
+	if !urlMapped {
+		return nil, ErrNotFound
+	}
+
+	agent, exists := r.agents[agentID]
+	if !exists {
+        // Data inconsistency! URL map points to non-existent agent. Log error.
+        log.Errorf("MemoryRepo: Data inconsistency - URL map points to missing agent ID %s for URL %s", agentID, url)
+		return nil, ErrNotFound // Or internal error? ErrNotFound is safer for caller.
+	}
+	log.Debugf("MemoryRepo: Found agent %s by URL %s", agentID, url)
+	return deepCopyAgent(agent)
+}
+
+func (r *memoryAgentRepository) List(ctx context.Context, limit, offset int) ([]*models.Agent, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Extract agents into a slice for sorting/pagination
+	agentList := make([]*models.Agent, 0, len(r.agents))
+	for _, agent := range r.agents {
+		agentList = append(agentList, agent)
+	}
+
+	// Sort for consistent pagination (e.g., by ID)
+	sort.Slice(agentList, func(i, j int) bool {
+		return agentList[i].ID < agentList[j].ID
+	})
+
+	// Apply pagination
+	start := offset
+	if start < 0 {
+		start = 0
+	}
+	if start >= len(agentList) {
+		return []*models.Agent{}, nil // Offset out of bounds
+	}
+
+	end := start + limit
+	if end > len(agentList) || limit <= 0 { // Handle limit <= 0 as "no limit"
+		end = len(agentList)
+	}
+
+    paginatedList := agentList[start:end]
+
+    // Create deep copies of the result slice
+    results := make([]*models.Agent, 0, len(paginatedList))
+    for _, agent := range paginatedList {
+        agentCopy, err := deepCopyAgent(agent)
+        if err != nil {
+            log.Errorf("MemoryRepo: Failed to deep copy agent %s during List: %v", agent.ID, err)
+            return nil, err // Propagate copy error
+        }
+        results = append(results, agentCopy)
+    }
+
+	log.Debugf("MemoryRepo: Listed agents (Limit: %d, Offset: %d) - returning %d", limit, offset, len(results))
+	return results, nil
+}
+--- END OF FILE: internal\repository\memory\agent_repo.go ---
+
+--- START OF FILE: internal\repository\memory\errors.go ---
+// internal/repository/memory/errors.go
+package memory
+
+import "errors"
+
+// ErrNotFound indicates that the requested resource was not found in memory.
+var ErrNotFound = errors.New("resource not found in memory")
+
+// ErrAlreadyExists indicates that a resource with the given ID/key already exists.
+var ErrAlreadyExists = errors.New("resource already exists")
+--- END OF FILE: internal\repository\memory\errors.go ---
+
+--- START OF FILE: internal\repository\memory\task_repo.go ---
+// internal/repository/memory/task_repo.go
+package memory
+
+import (
+	"context"
+	"encoding/json" // For deep copying via marshal/unmarshal
+	// "sort"
+	"sync"
+	"time"
+
+	"github.com/kathir-ks/a2a-platform/internal/models"
+	"github.com/kathir-ks/a2a-platform/internal/repository"
+	"github.com/kathir-ks/a2a-platform/pkg/a2a"
+	log "github.com/sirupsen/logrus"
+)
+
+type memoryTaskRepository struct {
+	mu          sync.RWMutex
+	tasks       map[string]*models.Task               // taskID -> Task
+	pushConfigs map[string]*models.PushNotificationConfig // taskID -> PushConfig
+	history     map[string][]a2a.TaskStatus           // taskID -> sorted list of statuses (newest last)
+}
+
+// NewMemoryTaskRepository creates a new in-memory task repository.
+func NewMemoryTaskRepository() repository.TaskRepository {
+	return &memoryTaskRepository{
+		tasks:       make(map[string]*models.Task),
+		pushConfigs: make(map[string]*models.PushNotificationConfig),
+		history:     make(map[string][]a2a.TaskStatus),
+	}
+}
+
+// deepCopyTask creates a deep copy of a task using JSON marshalling.
+// Necessary to prevent external modification of stored data.
+func deepCopyTask(original *models.Task) (*models.Task, error) {
+	if original == nil {
+		return nil, nil
+	}
+	cpy := &models.Task{}
+	bytes, err := json.Marshal(original)
+	if err != nil {
+		return nil, err
+	}
+	err = json.Unmarshal(bytes, cpy)
+	if err != nil {
+		return nil, err
+	}
+	return cpy, nil
+}
+
+// deepCopyPushConfig creates a deep copy.
+func deepCopyPushConfig(original *models.PushNotificationConfig) (*models.PushNotificationConfig, error) {
+	if original == nil {
+		return nil, nil
+	}
+	cpy := &models.PushNotificationConfig{}
+	bytes, err := json.Marshal(original)
+	if err != nil {
+		return nil, err
+	}
+	err = json.Unmarshal(bytes, cpy)
+	if err != nil {
+		return nil, err
+	}
+	return cpy, nil
+}
+
+
+func (r *memoryTaskRepository) Create(ctx context.Context, task *models.Task) (*models.Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.tasks[task.ID]; exists {
+		return nil, ErrAlreadyExists
+	}
+
+	// Store a deep copy
+	taskCopy, err := deepCopyTask(task)
+	if err != nil {
+        log.Errorf("MemoryRepo: Failed to deep copy task on create %s: %v", task.ID, err)
+		return nil, err
+	}
+    if taskCopy.CreatedAt.IsZero() {
+        taskCopy.CreatedAt = time.Now().UTC()
+    }
+    taskCopy.LastUpdatedAt = taskCopy.CreatedAt
+
+	r.tasks[task.ID] = taskCopy
+	log.Debugf("MemoryRepo: Created task %s", task.ID)
+
+    // Return another deep copy
+    return deepCopyTask(taskCopy)
+}
+
+func (r *memoryTaskRepository) Update(ctx context.Context, task *models.Task) (*models.Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	existingTask, exists := r.tasks[task.ID]
+	if !exists {
+		return nil, ErrNotFound
+	}
+
+	// Store a deep copy of the new data
+	taskCopy, err := deepCopyTask(task)
+	if err != nil {
+		log.Errorf("MemoryRepo: Failed to deep copy task on update %s: %v", task.ID, err)
+		return nil, err
+	}
+    // Preserve original CreatedAt, update LastUpdatedAt
+    taskCopy.CreatedAt = existingTask.CreatedAt
+    taskCopy.LastUpdatedAt = time.Now().UTC()
+
+	r.tasks[task.ID] = taskCopy
+	log.Debugf("MemoryRepo: Updated task %s", task.ID)
+
+    // Return another deep copy
+    return deepCopyTask(taskCopy)
+}
+
+func (r *memoryTaskRepository) FindByID(ctx context.Context, id string) (*models.Task, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	task, exists := r.tasks[id]
+	if !exists {
+		return nil, ErrNotFound
+	}
+	log.Debugf("MemoryRepo: Found task %s", id)
+    // Return a deep copy
+	return deepCopyTask(task)
+}
+
+func (r *memoryTaskRepository) FindBySessionID(ctx context.Context, sessionID string) ([]*models.Task, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	results := make([]*models.Task, 0)
+	for _, task := range r.tasks {
+		if task.SessionID != nil && *task.SessionID == sessionID {
+            // Append a deep copy
+            taskCopy, err := deepCopyTask(task)
+            if err != nil {
+                log.Errorf("MemoryRepo: Failed to deep copy task %s during FindBySessionID: %v", task.ID, err)
+                return nil, err // Propagate error if copy fails
+            }
+			results = append(results, taskCopy)
+		}
+	}
+	log.Debugf("MemoryRepo: Found %d tasks for session %s", len(results), sessionID)
+	return results, nil
+}
+
+func (r *memoryTaskRepository) SetPushConfig(ctx context.Context, taskID string, config *models.PushNotificationConfig) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Ensure the task itself exists first
+	if _, exists := r.tasks[taskID]; !exists {
+		return ErrNotFound
+	}
+
+    configCopy, err := deepCopyPushConfig(config)
+    if err != nil {
+         log.Errorf("MemoryRepo: Failed to deep copy push config on set %s: %v", taskID, err)
+		return err
+    }
+
+	r.pushConfigs[taskID] = configCopy
+	log.Debugf("MemoryRepo: Set push config for task %s", taskID)
+	return nil
+}
+
+func (r *memoryTaskRepository) GetPushConfig(ctx context.Context, taskID string) (*models.PushNotificationConfig, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	config, exists := r.pushConfigs[taskID]
+	if !exists {
+		// Check if the task exists but just has no config - still return ErrNotFound
+		// as the config resource itself is not found.
+		return nil, ErrNotFound
+	}
+	log.Debugf("MemoryRepo: Found push config for task %s", taskID)
+    // Return a deep copy
+	return deepCopyPushConfig(config)
+}
+
+func (r *memoryTaskRepository) AddHistory(ctx context.Context, taskID string, status a2a.TaskStatus) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Ensure the task exists
+	if _, exists := r.tasks[taskID]; !exists {
+		return ErrNotFound
+	}
+
+	// Ensure timestamp is set
+	if status.Timestamp == nil || status.Timestamp.IsZero() {
+        now := time.Now().UTC()
+		status.Timestamp = &now
+	}
+
+	r.history[taskID] = append(r.history[taskID], status)
+    // Optional: Keep history sorted if entries might arrive out of order (unlikely here)
+    // sort.SliceStable(r.history[taskID], func(i, j int) bool {
+	// 	return r.history[taskID][i].Timestamp.Before(*r.history[taskID][j].Timestamp)
+	// })
+	log.Debugf("MemoryRepo: Added history entry for task %s (new state: %s)", taskID, status.State)
+	return nil
+}
+
+func (r *memoryTaskRepository) GetHistory(ctx context.Context, taskID string, limit int) ([]a2a.TaskStatus, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	taskHistory, exists := r.history[taskID]
+	if !exists || len(taskHistory) == 0 {
+		return []a2a.TaskStatus{}, nil // Return empty slice, not error
+	}
+
+	// Note: History is appended, so newest is last
+	if limit <= 0 || limit >= len(taskHistory) {
+		// Return full history (or if limit is invalid)
+        // Return a copy of the slice to prevent external modification
+        histCopy := make([]a2a.TaskStatus, len(taskHistory))
+        copy(histCopy, taskHistory)
+        log.Debugf("MemoryRepo: Found %d history entries for task %s (returning all)", len(histCopy), taskID)
+		return histCopy, nil
+	}
+
+	// Return last 'limit' elements
+    startIndex := len(taskHistory) - limit
+    histCopy := make([]a2a.TaskStatus, limit)
+    copy(histCopy, taskHistory[startIndex:])
+	log.Debugf("MemoryRepo: Found %d history entries for task %s (returning last %d)", len(taskHistory), limit, taskID)
+	return histCopy, nil
+}
+--- END OF FILE: internal\repository\memory\task_repo.go ---
+
+--- START OF FILE: internal\repository\memory\tool_repo.go ---
+// internal/repository/memory/tool_repo.go
+package memory
+
+import (
+	"context"
+	"encoding/json"
+	"sort"
+	"sync"
+
+	"github.com/kathir-ks/a2a-platform/internal/models"
+	"github.com/kathir-ks/a2a-platform/internal/repository"
+	log "github.com/sirupsen/logrus"
+)
+
+type memoryToolRepository struct {
+	mu    sync.RWMutex
+	tools map[string]*models.ToolDefinition // tool name -> ToolDefinition
+}
+
+// NewMemoryToolRepository creates a new in-memory tool repository.
+func NewMemoryToolRepository() repository.ToolRepository {
+	return &memoryToolRepository{
+		tools: make(map[string]*models.ToolDefinition),
+	}
+}
+
+// deepCopyTool creates a deep copy.
+func deepCopyTool(original *models.ToolDefinition) (*models.ToolDefinition, error) {
+	if original == nil {
+		return nil, nil
+	}
+	cpy := &models.ToolDefinition{}
+	bytes, err := json.Marshal(original)
+	if err != nil {
+		return nil, err
+	}
+	err = json.Unmarshal(bytes, cpy)
+	if err != nil {
+		return nil, err
+	}
+	return cpy, nil
+}
+
+
+func (r *memoryToolRepository) Create(ctx context.Context, tool *models.ToolDefinition) (*models.ToolDefinition, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.tools[tool.Name]; exists {
+		return nil, ErrAlreadyExists
+	}
+
+	toolCopy, err := deepCopyTool(tool)
+	if err != nil {
+		log.Errorf("MemoryRepo: Failed to deep copy tool on create %s: %v", tool.Name, err)
+		return nil, err
+	}
+
+	r.tools[tool.Name] = toolCopy
+	log.Debugf("MemoryRepo: Created tool %s", tool.Name)
+
+	return deepCopyTool(toolCopy)
+}
+
+func (r *memoryToolRepository) FindByName(ctx context.Context, name string) (*models.ToolDefinition, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	tool, exists := r.tools[name]
+	if !exists {
+		return nil, ErrNotFound
+	}
+	log.Debugf("MemoryRepo: Found tool %s", name)
+	return deepCopyTool(tool)
+}
+
+func (r *memoryToolRepository) List(ctx context.Context, limit, offset int) ([]*models.ToolDefinition, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	toolList := make([]*models.ToolDefinition, 0, len(r.tools))
+	for _, tool := range r.tools {
+		toolList = append(toolList, tool)
+	}
+
+	// Sort by name for consistent pagination
+	sort.Slice(toolList, func(i, j int) bool {
+		return toolList[i].Name < toolList[j].Name
+	})
+
+	// Apply pagination
+	start := offset
+	if start < 0 {
+		start = 0
+	}
+	if start >= len(toolList) {
+		return []*models.ToolDefinition{}, nil
+	}
+
+	end := start + limit
+	if end > len(toolList) || limit <= 0 {
+		end = len(toolList)
+	}
+
+	paginatedList := toolList[start:end]
+
+    // Create deep copies
+    results := make([]*models.ToolDefinition, 0, len(paginatedList))
+     for _, tool := range paginatedList {
+        toolCopy, err := deepCopyTool(tool)
+        if err != nil {
+            log.Errorf("MemoryRepo: Failed to deep copy tool %s during List: %v", tool.Name, err)
+            return nil, err
+        }
+        results = append(results, toolCopy)
+    }
+
+
+	log.Debugf("MemoryRepo: Listed tools (Limit: %d, Offset: %d) - returning %d", limit, offset, len(results))
+	return results, nil
+}
+--- END OF FILE: internal\repository\memory\tool_repo.go ---
+
+--- START OF FILE: internal\tools\interface.go ---
+// internal/tools/interface.go
+package tools
+
+import (
+	"context"
+	"github.com/kathir-ks/a2a-platform/internal/models" // Reference ToolDefinition
+)
+
+// Executor defines the interface for a runnable tool.
+// Each specific tool (like a calculator or web search) will implement this.
+type Executor interface {
+	// GetDefinition returns the static definition of the tool (name, description, schema).
+	GetDefinition() models.ToolDefinition
+
+	// Execute runs the tool with the given parameters.
+	// Parameters should conform to the input schema defined in GetDefinition().Schema.
+	// The result map should conform to the output schema.
+	Execute(ctx context.Context, params map[string]any) (result map[string]any, err error)
+}
+
+// Registry defines the interface for managing available tools.
+// The ToolService in internal/app would likely use an implementation of this.
+type Registry interface {
+	// Register adds or updates a tool executor in the registry.
+	Register(ctx context.Context, tool Executor) error
+
+	// Get returns the executor for a given tool name.
+	Get(ctx context.Context, toolName string) (Executor, error) // Returns error if not found
+
+	// List returns the definitions of all registered tools.
+	List(ctx context.Context) ([]models.ToolDefinition, error)
+}
+--- END OF FILE: internal\tools\interface.go ---
+
+--- START OF FILE: internal\tools\llm_tool.go ---
+// internal/tools/llm_tool.go
+package tools
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"encoding/json"
+	
+	"github.com/kathir-ks/a2a-platform/internal/llmclient" // LLM Client interface
+	"github.com/kathir-ks/a2a-platform/internal/models"
+	log "github.com/sirupsen/logrus"
+)
+
+const LLMToolName = "language_model"
+
+// LLMTool provides access to configured language models.
+type LLMTool struct {
+	clients       map[string]llmclient.Client // Map provider name to client instance
+	defaultModel  string                      // Default model identifier (e.g., "openai:gpt-4o")
+	defaultProvider string                    // Default provider name extracted from defaultModel
+}
+
+var _ Executor = (*LLMTool)(nil) // Compile-time check
+
+// NewLLMTool creates a new LLM tool executor.
+// It requires initialized LLM clients and the default model identifier.
+func NewLLMTool(clients []llmclient.Client, defaultModelIdentifier string) (*LLMTool, error) {
+	if len(clients) == 0 {
+		return nil, fmt.Errorf("at least one LLM client must be provided")
+	}
+	if defaultModelIdentifier == "" {
+        return nil, fmt.Errorf("default LLM model identifier is required")
+    }
+
+
+	clientMap := make(map[string]llmclient.Client)
+	for _, c := range clients {
+        providerName := c.ProviderName()
+        if providerName == "" {
+            log.Warnf("LLM client provided without a ProviderName, skipping.")
+            continue
+        }
+		if _, exists := clientMap[providerName]; exists {
+             log.Warnf("Multiple LLM clients provided for provider '%s', using the last one.", providerName)
+        }
+		clientMap[providerName] = c
+        log.Infof("LLM Tool initialized with client for provider: %s", providerName)
+	}
+
+    if len(clientMap) == 0 {
+        return nil, fmt.Errorf("no valid LLM clients provided (missing ProviderName?)")
+    }
+
+    // Determine default provider
+    defaultProvider, _, ok := strings.Cut(defaultModelIdentifier, ":")
+    if !ok {
+        return nil, fmt.Errorf("invalid default LLM model identifier format (expected 'provider:model'): %s", defaultModelIdentifier)
+    }
+    if _, providerExists := clientMap[defaultProvider]; !providerExists {
+        // Fallback if default provider isn't configured? Or error out? Let's error for now.
+         return nil, fmt.Errorf("default LLM provider '%s' specified but no client configured for it", defaultProvider)
+    }
+
+	return &LLMTool{
+		clients:       clientMap,
+		defaultModel:  defaultModelIdentifier,
+        defaultProvider: defaultProvider,
+	}, nil
+}
+
+// GetDefinition implements the tools.Executor interface.
+func (t *LLMTool) GetDefinition() models.ToolDefinition {
+	// Base schema - could be enhanced dynamically based on available models/providers
+	return models.ToolDefinition{
+		Name:        LLMToolName,
+		Description: "Accesses large language models for text generation or chat.",
+		Schema: models.Metadata{
+			"type": "object",
+			"properties": map[string]any{
+				"model": map[string]any{
+					"type":        "string",
+					"description": fmt.Sprintf("Optional. Model identifier (e.g., 'openai:gpt-4o', 'anthropic:claude-3-opus-20240229'). Defaults to '%s'.", t.defaultModel),
+				},
+				"system_prompt": map[string]any{
+					"type":        "string",
+					"description": "Optional. System message to guide the model's behavior.",
+				},
+                "prompt": map[string]any{ // Allow single prompt for simpler cases
+					"type":        "string",
+					"description": "Optional. A single user prompt. Use 'messages' for chat history.",
+				},
+				"messages": map[string]any{
+					"type": "array",
+                    "description": "Optional. A list of messages for chat history. Required if 'prompt' is not provided.",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"role":    map[string]any{"type": "string", "enum": []string{"user", "assistant", "system"}},
+							"content": map[string]any{"type": "string"},
+						},
+						"required": []string{"role", "content"},
+					},
+				},
+				"max_tokens": map[string]any{
+					"type":        "integer",
+					"description": "Optional. Maximum number of tokens to generate.",
+				},
+				"temperature": map[string]any{
+					"type":        "number",
+					"format":      "float",
+                    "minimum": 0.0,
+                    "maximum": 2.0,
+					"description": "Optional. Sampling temperature (e.g., 0.7). Higher values mean more randomness.",
+				},
+				"stop_sequences": map[string]any{
+					"type":        "array",
+                    "items":       map[string]any{"type": "string"},
+					"description": "Optional. Sequences where the generation should stop.",
+				},
+                "stream": map[string]any{
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Optional. Whether to stream the response (requires specific handling by caller).",
+                },
+			},
+			// "required": []string{}, // Logic below determines requirement for prompt/messages
+            // --- Output Schema ---
+             "output": map[string]any{
+                "type": "object",
+                "description": "Result for non-streaming calls. Streaming calls provide chunks.",
+                "properties": map[string]any{
+                    "content": map[string]any{ "type": "string", "description": "The generated text response."},
+                    "model_used": map[string]any{ "type": "string", "description": "The specific model identifier used."},
+                    "finish_reason": map[string]any{ "type": "string", "description": "Reason generation finished (e.g., 'stop', 'length')."},
+                    "usage": map[string]any{
+                        "type": "object",
+                        "properties": map[string]any{
+                            "prompt_tokens": map[string]any{"type": "integer"},
+                            "completion_tokens": map[string]any{"type": "integer"},
+                            // "total_tokens": map[string]any{"type": "integer"}, // Optional
+                        },
+                        "description": "Token usage information.",
+                    },
+                },
+                 "required": []string{"content", "model_used", "finish_reason"},
+            },
+		},
+	}
+}
+
+// Execute implements the tools.Executor interface.
+// NOTE: This current implementation handles NON-STREAMING requests.
+// Handling streaming via a standard tool Execute() is awkward because Execute()
+// returns a single result. Streaming might need a different mechanism (e.g., dedicated platform service method).
+func (t *LLMTool) Execute(ctx context.Context, params map[string]any) (result map[string]any, err error) {
+	llmParams, err := t.parseAndValidateParams(params)
+	if err != nil {
+		return nil, fmt.Errorf("invalid parameters for %s tool: %w", LLMToolName, err)
+	}
+
+    // --- Streaming Check ---
+    if llmParams.Stream {
+        // How to handle this? The Tool interface expects a single map[string]any return.
+        // Option 1: Error out - Simplest, streaming needs different mechanism.
+        // Option 2: Return metadata indicating streaming started (awkward).
+        // Option 3: Perform the stream internally and aggregate results (defeats purpose of streaming).
+        log.Warnf("Streaming requested via tool %s, but standard Execute cannot return a stream. Ignoring stream flag.", LLMToolName)
+        // For now, we proceed with a non-streaming call even if stream=true was requested.
+        // A better solution involves dedicated streaming support in the platform/A2A protocol.
+        llmParams.Stream = false // Force non-streaming for this path
+    }
+
+	// Determine client and model
+	providerName := t.defaultProvider
+	modelNameForCall := ""
+    if llmParams.Model != "" { // Model specified in params (e.g., "openai:gpt-4o")
+        p, m, ok := strings.Cut(llmParams.Model, ":")
+        if !ok || p == "" || m == "" {
+            return nil, fmt.Errorf("invalid model format '%s', expected 'provider:model'", llmParams.Model)
+        }
+        providerName = p     // Use specified provider
+        modelNameForCall = m // Use specified model name for the API call
+    } else { // Model not specified, use default
+        _ , m, ok := strings.Cut(t.defaultModel, ":") // Extract model name from default
+        if !ok {
+             // This should have been caught during tool initialization, but double-check
+             return nil, fmt.Errorf("internal error: invalid default model format '%s'", t.defaultModel)
+        }
+        modelNameForCall = m
+        // providerName remains t.defaultProvider
+    }
+	
+	llmParams.Model = modelNameForCall
+
+
+	client, ok := t.clients[providerName]
+	if !ok {
+		return nil, fmt.Errorf("no configured LLM client for provider: %s", providerName)
+	}
+
+	log.Infof("Executing LLM tool using provider '%s' and model '%s'", providerName, llmParams.Model)
+
+	// Call the LLM Client (non-streaming)
+	resp, err := client.Generate(ctx, llmParams)
+	if err != nil {
+		log.Errorf("LLM client '%s' failed: %v", providerName, err)
+		// Return a structured error potentially? Or just the error message?
+		return nil, fmt.Errorf("LLM execution failed (provider: %s): %w", providerName, err)
+	}
+
+	// Map response to output schema
+	result = map[string]any{
+		"content":       resp.Content,
+		"model_used":    fmt.Sprintf("%s:%s", providerName, resp.ModelUsed), // Add provider prefix back
+		"finish_reason": resp.FinishReason,
+		"usage":         resp.Usage, // Pass usage map directly
+	}
+
+	return result, nil
+}
+
+// parseAndValidateParams converts the generic map to structured llmclient.GenerationParams
+func (t *LLMTool) parseAndValidateParams(params map[string]any) (llmclient.GenerationParams, error) {
+	var genParams llmclient.GenerationParams
+
+	// --- Model ---
+    if modelVal, ok := params["model"]; ok {
+        if modelStr, ok := modelVal.(string); ok {
+             genParams.Model = modelStr // Keep provider prefix for now
+        } else {
+            return genParams, fmt.Errorf("'model' must be a string")
+        }
+    } // Use default if empty
+
+	// --- System Prompt ---
+    if spVal, ok := params["system_prompt"]; ok {
+        if spStr, ok := spVal.(string); ok {
+             genParams.SystemPrompt = &spStr
+        } else {
+            return genParams, fmt.Errorf("'system_prompt' must be a string")
+        }
+    }
+
+	// --- Messages / Prompt ---
+    hasMessages := false
+    if msgVal, ok := params["messages"]; ok {
+        // Need robust conversion from []any or []map[string]any to []llmclient.Message
+        messagesBytes, err := json.Marshal(msgVal)
+        if err != nil { return genParams, fmt.Errorf("cannot marshal 'messages': %w", err)}
+        var messages []llmclient.Message
+        if err := json.Unmarshal(messagesBytes, &messages); err != nil {
+            return genParams, fmt.Errorf("invalid 'messages' format: %w", err)
+        }
+        if len(messages) > 0 {
+            genParams.Messages = messages
+            hasMessages = true
+        }
+    }
+
+    if promptVal, ok := params["prompt"]; ok && !hasMessages {
+        if promptStr, ok := promptVal.(string); ok && promptStr != "" {
+            genParams.Messages = []llmclient.Message{{Role: "user", Content: promptStr}}
+             hasMessages = true
+        } else if !hasMessages {
+             return genParams, fmt.Errorf("'prompt' must be a non-empty string if 'messages' is not provided")
+        }
+    }
+
+    if !hasMessages {
+         return genParams, fmt.Errorf("either 'prompt' (string) or 'messages' (array) is required")
+    }
+
+
+	// --- Other Parameters (with type checks) ---
+    if mtVal, ok := params["max_tokens"]; ok {
+		// JSON numbers decode as float64, handle potential conversion
+        if mtFloat, ok := mtVal.(float64); ok {
+            mtInt := int(mtFloat)
+            if float64(mtInt) != mtFloat { // Check for non-integer float
+                 return genParams, fmt.Errorf("'max_tokens' must be an integer")
+            }
+            genParams.MaxTokens = &mtInt
+        } else {
+            return genParams, fmt.Errorf("'max_tokens' must be an integer")
+        }
+	}
+
+    if tempVal, ok := params["temperature"]; ok {
+         if tempFloat, ok := tempVal.(float64); ok {
+            genParams.Temperature = &tempFloat
+        } else {
+            return genParams, fmt.Errorf("'temperature' must be a number")
+        }
+    }
+
+     if ssVal, ok := params["stop_sequences"]; ok {
+        if ssSlice, ok := ssVal.([]any); ok {
+             genParams.StopSequences = make([]string, 0, len(ssSlice))
+             for i, item := range ssSlice {
+                 if itemStr, ok := item.(string); ok {
+                     genParams.StopSequences = append(genParams.StopSequences, itemStr)
+                 } else {
+                     return genParams, fmt.Errorf("item %d in 'stop_sequences' is not a string", i)
+                 }
+             }
+        } else {
+            return genParams, fmt.Errorf("'stop_sequences' must be an array of strings")
+        }
+    }
+
+    if streamVal, ok := params["stream"]; ok {
+        if streamBool, ok := streamVal.(bool); ok {
+            genParams.Stream = streamBool
+        } else {
+             return genParams, fmt.Errorf("'stream' must be a boolean")
+        }
+    }
+
+
+	return genParams, nil
+}
+--- END OF FILE: internal\tools\llm_tool.go ---
+
+--- START OF FILE: internal\tools\registry.go ---
+// internal/tools/registry.go
+package tools
+
+import (
+	"context"
+	"fmt"
+	"sync"
+
+	"github.com/kathir-ks/a2a-platform/internal/models"
+	log "github.com/sirupsen/logrus"
+)
+
+// memoryRegistry provides an in-memory implementation of the tools.Registry interface.
+type memoryRegistry struct {
+	mu    sync.RWMutex
+	tools map[string]Executor // Map tool name to its executor
+}
+
+// NewMemoryRegistry creates a new in-memory tool registry.
+func NewMemoryRegistry() Registry {
+	return &memoryRegistry{
+		tools: make(map[string]Executor),
+	}
+}
+
+// Register implements the Registry interface.
+func (r *memoryRegistry) Register(ctx context.Context, tool Executor) error {
+	if tool == nil {
+		return fmt.Errorf("cannot register a nil tool")
+	}
+	def := tool.GetDefinition()
+	if def.Name == "" {
+		return fmt.Errorf("cannot register tool with empty name")
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.tools[def.Name]; exists {
+		log.Warnf("Tool '%s' is being replaced in the registry", def.Name)
+	} else {
+		log.Infof("Registering tool: %s", def.Name)
+	}
+	r.tools[def.Name] = tool
+
+	return nil
+}
+
+// Get implements the Registry interface.
+func (r *memoryRegistry) Get(ctx context.Context, toolName string) (Executor, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	tool, ok := r.tools[toolName]
+	if !ok {
+		return nil, fmt.Errorf("tool '%s' not found", toolName) // Specific error
+	}
+	return tool, nil
+}
+
+// List implements the Registry interface.
+func (r *memoryRegistry) List(ctx context.Context) ([]models.ToolDefinition, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	defs := make([]models.ToolDefinition, 0, len(r.tools))
+	for _, tool := range r.tools {
+		defs = append(defs, tool.GetDefinition())
+	}
+	return defs, nil
+}
+--- END OF FILE: internal\tools\registry.go ---
+
+--- START OF FILE: internal\tools\examples\calculator.go ---
+// internal/tools/examples/calculator.go
+package examples
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/kathir-ks/a2a-platform/internal/models"
+	"github.com/kathir-ks/a2a-platform/internal/tools"
+)
+
+// CalculatorTool provides basic arithmetic operations.
+type CalculatorTool struct{}
+
+var _ tools.Executor = (*CalculatorTool)(nil) // Compile-time check for interface implementation
+
+// GetDefinition implements the tools.Executor interface.
+func (t *CalculatorTool) GetDefinition() models.ToolDefinition {
+	return models.ToolDefinition{
+		Name:        "calculator",
+		Description: "Performs basic arithmetic operations: add, subtract, multiply, divide.",
+		Schema: models.Metadata{
+			"type": "object",
+			"properties": map[string]any{
+				"operation": map[string]any{
+					"type": "string",
+					"enum": []string{"add", "subtract", "multiply", "divide"},
+                    "description": "The arithmetic operation to perform.",
+				},
+				"operand1": map[string]any{
+					"type": "number",
+                    "description": "The first number.",
+				},
+				"operand2": map[string]any{
+					"type": "number",
+                    "description": "The second number.",
+				},
+			},
+			"required": []string{"operation", "operand1", "operand2"},
+            // Output schema
+            "output": map[string]any{
+                "type": "object",
+                "properties": map[string]any{
+                    "result": map[string]any{
+                        "type": "number",
+                        "description": "The result of the calculation.",
+                    },
+                },
+                 "required": []string{"result"},
+            },
+		},
+	}
+}
+
+// Execute implements the tools.Executor interface.
+func (t *CalculatorTool) Execute(ctx context.Context, params map[string]any) (result map[string]any, err error) {
+	// Basic type assertion and validation (more robust validation using schema is better)
+	op, ok := params["operation"].(string)
+	if !ok { return nil, fmt.Errorf("invalid or missing 'operation' parameter (string expected)") }
+
+	op1, ok := params["operand1"].(float64) // JSON numbers are typically float64
+	if !ok { return nil, fmt.Errorf("invalid or missing 'operand1' parameter (number expected)") }
+
+	op2, ok := params["operand2"].(float64)
+	if !ok { return nil, fmt.Errorf("invalid or missing 'operand2' parameter (number expected)") }
+
+	var calculationResult float64
+
+	switch op {
+	case "add":
+		calculationResult = op1 + op2
+	case "subtract":
+		calculationResult = op1 - op2
+	case "multiply":
+		calculationResult = op1 * op2
+	case "divide":
+		if op2 == 0 {
+			return nil, fmt.Errorf("division by zero")
+		}
+		calculationResult = op1 / op2
+	default:
+		return nil, fmt.Errorf("unknown operation: %s", op)
+	}
+
+	// Return result conforming to the output schema
+	result = map[string]any{
+		"result": calculationResult,
+	}
+	return result, nil
+}
+--- END OF FILE: internal\tools\examples\calculator.go ---
+
+--- START OF FILE: internal\ws\manager.go ---
+// internal/ws/manager.go
+package ws
+
+import (
+	"fmt"
+	"context"
+	"encoding/json" // Added for handling incoming messages
+	"errors"
+	"net/http"
+	"sync"
+	"time" // Added for context timeout and write deadlines
+
+	"github.com/gorilla/websocket"
+	"github.com/kathir-ks/a2a-platform/internal/app" // Need app services potentially
+	"github.com/kathir-ks/a2a-platform/pkg/a2a"     // Need A2A types for messages
+	log "github.com/sirupsen/logrus"
+)
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		// TODO: Implement proper origin checking for production
+		log.Warnf("WebSocket CheckOrigin allowing request from origin: %s", r.Header.Get("Origin"))
+		return true
+	},
+}
+
+// Manager defines the interface for managing WebSocket connections and subscriptions.
+type Manager interface {
+	HandleConnection(w http.ResponseWriter, r *http.Request)
+	Subscribe(conn *websocket.Conn, taskID string) error
+	Unsubscribe(conn *websocket.Conn, taskID string) error
+	SendToTask(ctx context.Context, taskID string, message any) error
+	Close()
+}
+
+// client represents a single WebSocket client connection managed by the manager.
+type client struct {
+	conn *websocket.Conn
+	send chan []byte // Buffered channel for outbound messages specific to this client
+}
+
+// connectionManager provides an in-memory implementation of the ws.Manager interface.
+type connectionManager struct {
+	subscriptions map[string]map[*client]struct{}
+	clients       map[*client]bool
+	mu            sync.RWMutex
+
+	// References to core app services needed for handling incoming messages
+	platformService app.PlatformService
+	taskService     app.TaskService
+
+	register   chan *client
+	unregister chan *client
+	broadcast  chan []byte // Optional
+	stop       chan struct{}
+}
+
+// NewConnectionManager creates a new WebSocket connection manager.
+// Accepts individual services directly (Option B from previous fixes).
+func NewConnectionManager(ps app.PlatformService, ts app.TaskService) Manager {
+	if ps == nil || ts == nil {
+		log.Fatal("WebSocket Manager requires non-nil PlatformService and TaskService")
+	}
+	m := &connectionManager{
+		subscriptions: make(map[string]map[*client]struct{}),
+		clients:       make(map[*client]bool),
+		register:      make(chan *client),
+		unregister:    make(chan *client),
+		broadcast:     make(chan []byte),
+		stop:          make(chan struct{}),
+		platformService: ps, // Assign injected services
+		taskService:     ts, // Assign injected services
+	}
+	go m.run()
+	return m
+}
+
+// run is the central event loop for the manager.
+func (m *connectionManager) run() {
+	log.Info("WebSocket Manager started")
+	defer log.Info("WebSocket Manager stopped")
+
+	for {
+		select {
+		case <-m.stop:
+			m.cleanupAllConnections()
+			return
+
+		case client := <-m.register:
+			m.mu.Lock()
+			m.clients[client] = true
+			log.Debugf("WebSocket client registered: %s", client.conn.RemoteAddr())
+			m.mu.Unlock()
+
+		case client := <-m.unregister:
+			m.mu.Lock()
+			if _, ok := m.clients[client]; ok {
+				delete(m.clients, client)
+				for taskID, subs := range m.subscriptions {
+					if _, subscribed := subs[client]; subscribed {
+						delete(m.subscriptions[taskID], client)
+						if len(m.subscriptions[taskID]) == 0 {
+							delete(m.subscriptions, taskID)
+						}
+						log.Debugf("Client %s unsubscribed from task %s", client.conn.RemoteAddr(), taskID)
+					}
+				}
+				close(client.send)
+				log.Debugf("WebSocket client unregistered: %s", client.conn.RemoteAddr())
+			}
+			m.mu.Unlock()
+		}
+	}
+}
+
+// HandleConnection implements the Manager interface.
+func (m *connectionManager) HandleConnection(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Errorf("Failed to upgrade WebSocket connection: %v", err)
+		return
+	}
+	log.Infof("WebSocket connection established: %s", conn.RemoteAddr())
+
+	client := &client{
+		conn: conn,
+		send: make(chan []byte, 256),
+	}
+
+	m.register <- client
+
+	go m.writePump(client)
+	go m.readPump(client)
+}
+
+// readPump pumps messages from the WebSocket connection to the manager/app logic.
+func (m *connectionManager) readPump(c *client) {
+	defer func() {
+		m.unregister <- c
+		c.conn.Close()
+		log.Debugf("WebSocket readPump finished for %s", c.conn.RemoteAddr())
+	}()
+
+	c.conn.SetReadLimit(maxMessageSize)
+	c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.conn.SetPongHandler(func(string) error {
+		c.conn.SetReadDeadline(time.Now().Add(pongWait)); return nil
+	})
+
+	for {
+		messageType, message, err := c.conn.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Warnf("WebSocket read error for %s: %v", c.conn.RemoteAddr(), err)
+			} else {
+				log.Debugf("WebSocket closed normally for %s: %v", c.conn.RemoteAddr(), err)
+			}
+			break
+		}
+
+		if messageType == websocket.TextMessage || messageType == websocket.BinaryMessage {
+			log.Debugf("Received WebSocket message from %s (type: %d, size: %d)", c.conn.RemoteAddr(), messageType, len(message))
+			m.handleIncomingWSMessage(c, message) // Process the message
+		} else {
+			log.Debugf("Ignoring WebSocket message type %d from %s", messageType, c.conn.RemoteAddr())
+		}
+	}
+}
+
+// writePump pumps messages from the client's send channel to the WebSocket connection.
+func (m *connectionManager) writePump(c *client) {
+	ticker := time.NewTicker(pingPeriod)
+	defer func() {
+		ticker.Stop()
+		c.conn.Close()
+		log.Debugf("WebSocket writePump finished for %s", c.conn.RemoteAddr())
+	}()
+
+	for {
+		select {
+		case message, ok := <-c.send:
+			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if !ok {
+				log.Debugf("Client send channel closed for %s, sending close message", c.conn.RemoteAddr())
+				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+
+			w, err := c.conn.NextWriter(websocket.TextMessage)
+			if err != nil {
+				log.Errorf("Error getting writer for WebSocket %s: %v", c.conn.RemoteAddr(), err)
+				return
+			}
+			_, err = w.Write(message)
+			if err != nil {
+				log.Errorf("Error writing message to WebSocket %s: %v", c.conn.RemoteAddr(), err)
+				// Don't return immediately, try closing writer first
+			}
+
+			if err := w.Close(); err != nil {
+				log.Errorf("Error closing writer for WebSocket %s: %v", c.conn.RemoteAddr(), err)
+				return
+			}
+
+		case <-ticker.C:
+			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				log.Warnf("Error sending ping to WebSocket %s: %v", c.conn.RemoteAddr(), err)
+				return
+			}
+			log.Tracef("Sent ping to %s", c.conn.RemoteAddr())
+		}
+	}
+}
+
+// handleIncomingWSMessage processes messages received from a WebSocket client.
+func (m *connectionManager) handleIncomingWSMessage(c *client, message []byte) {
+	var rawReq struct {
+		a2a.JSONRPCMessage
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}
+
+	if err := json.Unmarshal(message, &rawReq); err != nil {
+		log.Warnf("Failed to decode incoming WS message from %s: %v", c.conn.RemoteAddr(), err)
+		errResp := a2a.NewParseError(err.Error())
+		// Correctly initialize embedded message
+		m.sendToClient(c, a2a.JSONRPCResponse{
+			JSONRPCMessage: a2a.JSONRPCMessage{JSONRPC: a2a.JSONRPCVersion, ID: rawReq.ID}, // Use ID from rawReq if available
+			Error:          errResp,
+		})
+		return
+	}
+
+	_, cancel := context.WithTimeout(context.Background(), 30*time.Second) // Keep context
+	defer cancel()
+
+	// Route based on method
+	switch rawReq.Method {
+	case a2a.MethodSendTaskSubscribe:
+		var params a2a.TaskSendParams
+		if err := json.Unmarshal(rawReq.Params, &params); err != nil {
+			errResp := a2a.NewInvalidParamsError(err.Error())
+			m.sendToClient(c, a2a.JSONRPCResponse{
+				JSONRPCMessage: a2a.JSONRPCMessage{JSONRPC: a2a.JSONRPCVersion, ID: rawReq.ID}, // Fix
+				Error:          errResp,
+			})
+			return
+		}
+		log.Infof("WS Client %s requests subscription via SendTaskSubscribe for task %s", c.conn.RemoteAddr(), params.ID)
+
+		if subErr := m.Subscribe(c.conn, params.ID); subErr != nil {
+			log.Errorf("Error subscribing client %s to task %s: %v", c.conn.RemoteAddr(), params.ID, subErr)
+			errResp := a2a.NewInternalError("failed to subscribe to task stream")
+			m.sendToClient(c, a2a.JSONRPCResponse{
+				JSONRPCMessage: a2a.JSONRPCMessage{JSONRPC: a2a.JSONRPCVersion, ID: rawReq.ID}, // Fix
+				Error:          errResp,
+			})
+			return
+		}
+
+		// --- Call PlatformService (Placeholder - pass ctx if needed) ---
+		// eventChan, rpcErr := m.platformService.HandleSendTaskSubscribe(ctx, params)
+		// if rpcErr != nil { ... }
+		log.Warn("PlatformService.HandleSendTaskSubscribe integration not fully implemented")
+
+		// Send acknowledgement response
+		m.sendToClient(c, a2a.JSONRPCResponse{
+			JSONRPCMessage: a2a.JSONRPCMessage{JSONRPC: a2a.JSONRPCVersion, ID: rawReq.ID}, // Fix
+			Result:         map[string]string{"status": "subscribed"},
+		})
+
+	case a2a.MethodResubscribeTask:
+		var params a2a.TaskQueryParams
+		if err := json.Unmarshal(rawReq.Params, &params); err != nil {
+			errResp := a2a.NewInvalidParamsError(err.Error())
+			m.sendToClient(c, a2a.JSONRPCResponse{
+				JSONRPCMessage: a2a.JSONRPCMessage{JSONRPC: a2a.JSONRPCVersion, ID: rawReq.ID}, // Fix
+				Error:          errResp,
+			})
+			return
+		}
+		log.Infof("WS Client %s requests ResubscribeTask for task %s", c.conn.RemoteAddr(), params.ID)
+
+		if subErr := m.Subscribe(c.conn, params.ID); subErr != nil {
+			log.Errorf("Error resubscribing client %s to task %s: %v", c.conn.RemoteAddr(), params.ID, subErr)
+			errResp := a2a.NewInternalError("failed to resubscribe to task stream")
+			m.sendToClient(c, a2a.JSONRPCResponse{
+				JSONRPCMessage: a2a.JSONRPCMessage{JSONRPC: a2a.JSONRPCVersion, ID: rawReq.ID}, // Fix
+				Error:          errResp,
+			})
+			return
+		}
+
+		// --- Call PlatformService (Placeholder - pass ctx if needed) ---
+		// _, rpcErr := m.platformService.HandleResubscribeTask(ctx, params)
+		// if rpcErr != nil { ... }
+		log.Warn("PlatformService.HandleResubscribeTask integration not fully implemented")
+
+		// Send ack response
+		m.sendToClient(c, a2a.JSONRPCResponse{
+			JSONRPCMessage: a2a.JSONRPCMessage{JSONRPC: a2a.JSONRPCVersion, ID: rawReq.ID}, // Fix
+			Result:         map[string]string{"status": "resubscribed"},
+		})
+
+	default:
+		log.Warnf("Received unsupported method '%s' over WebSocket from %s", rawReq.Method, c.conn.RemoteAddr())
+		errResp := a2a.NewMethodNotFoundError(nil)
+		m.sendToClient(c, a2a.JSONRPCResponse{
+			JSONRPCMessage: a2a.JSONRPCMessage{JSONRPC: a2a.JSONRPCVersion, ID: rawReq.ID}, // Fix
+			Error:          errResp,
+		})
+	}
+}
+
+// Subscribe implements the Manager interface.
+func (m *connectionManager) Subscribe(conn *websocket.Conn, taskID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var targetClient *client
+	for c := range m.clients {
+		if c.conn == conn {
+			targetClient = c
+			break
+		}
+	}
+	if targetClient == nil {
+		return errors.New("cannot subscribe: connection not registered")
+	}
+
+	if _, ok := m.subscriptions[taskID]; !ok {
+		m.subscriptions[taskID] = make(map[*client]struct{})
+	}
+
+	if _, already := m.subscriptions[taskID][targetClient]; already {
+		log.Debugf("Client %s already subscribed to task %s", conn.RemoteAddr(), taskID)
+		return nil
+	}
+
+	m.subscriptions[taskID][targetClient] = struct{}{}
+	log.Infof("Client %s subscribed to task %s", conn.RemoteAddr(), taskID)
+	return nil
+}
+
+// Unsubscribe implements the Manager interface.
+func (m *connectionManager) Unsubscribe(conn *websocket.Conn, taskID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var targetClient *client
+	for c := range m.clients {
+		if c.conn == conn {
+			targetClient = c
+			break
+		}
+	}
+	if targetClient == nil {
+		return errors.New("cannot unsubscribe: connection not registered")
+	}
+
+	if subs, ok := m.subscriptions[taskID]; ok {
+		if _, subscribed := subs[targetClient]; subscribed {
+			delete(m.subscriptions[taskID], targetClient)
+			log.Infof("Client %s unsubscribed from task %s", conn.RemoteAddr(), taskID)
+			if len(m.subscriptions[taskID]) == 0 {
+				delete(m.subscriptions, taskID)
+				log.Debugf("Removed empty subscription map for task %s", taskID)
+			}
+			return nil
+		}
+	}
+	log.Warnf("Client %s attempted to unsubscribe from task %s, but was not subscribed", conn.RemoteAddr(), taskID)
+	return errors.New("client not subscribed to this task")
+}
+
+// SendToTask implements the Manager interface.
+func (m *connectionManager) SendToTask(ctx context.Context, taskID string, message any) error {
+	m.mu.RLock()
+	subs, ok := m.subscriptions[taskID]
+	if !ok || len(subs) == 0 {
+		m.mu.RUnlock()
+		log.Debugf("No subscribers found for task %s, message not sent", taskID)
+		return nil
+	}
+
+	clientsToSend := make([]*client, 0, len(subs))
+	for c := range subs {
+		clientsToSend = append(clientsToSend, c)
+	}
+	m.mu.RUnlock()
+
+	payload, err := json.Marshal(message)
+	if err != nil {
+		log.Errorf("Failed to marshal message for task %s: %v", taskID, err)
+		return fmt.Errorf("failed to marshal WebSocket message: %w", err)
+	}
+
+	log.Debugf("Sending message to %d subscriber(s) for task %s", len(clientsToSend), taskID)
+
+	var wg sync.WaitGroup
+	for _, c := range clientsToSend {
+		wg.Add(1)
+		go func(client *client) {
+			defer wg.Done()
+			select {
+			case client.send <- payload:
+			case <-time.After(1 * time.Second):
+				log.Warnf("Timeout queuing message for client %s on task %s", client.conn.RemoteAddr(), taskID)
+			case <-m.stop:
+				log.Debugf("Manager stopping, aborting send to client %s", client.conn.RemoteAddr())
+			}
+		}(c)
+	}
+	wg.Wait()
+
+	return nil
+}
+
+// sendToClient is a helper to marshal and queue a message for a specific client.
+func (m *connectionManager) sendToClient(c *client, message any) {
+	payload, err := json.Marshal(message)
+	if err != nil {
+		log.Errorf("Failed to marshal message for client %s: %v", c.conn.RemoteAddr(), err)
+		return
+	}
+	select {
+	case c.send <- payload:
+	case <-time.After(1 * time.Second):
+		log.Warnf("Timeout queuing direct message for client %s", c.conn.RemoteAddr())
+	case <-m.stop:
+		log.Debugf("Manager stopping, aborting direct send to client %s", c.conn.RemoteAddr())
+	}
+}
+
+// Close implements the Manager interface.
+func (m *connectionManager) Close() {
+	log.Info("Closing WebSocket Manager...")
+	close(m.stop)
+}
+
+// cleanupAllConnections closes all client connections. Called when manager stops.
+func (m *connectionManager) cleanupAllConnections() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	log.Infof("Closing %d active WebSocket connections...", len(m.clients))
+	for c := range m.clients {
+		c.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseGoingAway, "Server shutting down"))
+		close(c.send)
+		c.conn.Close()
+		delete(m.clients, c)
+	}
+	m.subscriptions = make(map[string]map[*client]struct{}) // Clear subscriptions
+	log.Info("All WebSocket connections closed.")
+}
+
+// Define WebSocket constants
+const (
+	writeWait      = 10 * time.Second
+	pongWait       = 60 * time.Second
+	pingPeriod     = (pongWait * 9) / 10
+	maxMessageSize = 1024 * 10
+)
+--- END OF FILE: internal\ws\manager.go ---
+
+--- START OF FILE: pkg\a2a\constants.go ---
+// pkg/a2a/constants.go
+package a2a
+
+const (
+	// JSONRPCVersion specifies the version of the JSON-RPC protocol.
+	JSONRPCVersion = "2.0"
+
+	// Method names for A2A requests
+	MethodSendTask                   = "tasks/send"
+	MethodSendTaskSubscribe          = "tasks/sendSubscribe" // For streaming
+	MethodGetTask                    = "tasks/get"
+	MethodCancelTask                 = "tasks/cancel"
+	MethodResubscribeTask            = "tasks/resubscribe" // For streaming reconnection
+	MethodSetTaskPushNotification    = "tasks/pushNotification/set"
+	MethodGetTaskPushNotification    = "tasks/pushNotification/get"
+
+	// Message Roles
+	RoleUser  = "user"
+	RoleAgent = "agent"
+
+	// Part Types
+	PartTypeText = "text"
+	PartTypeFile = "file"
+	PartTypeData = "data"
+)
+--- END OF FILE: pkg\a2a\constants.go ---
+
+--- START OF FILE: pkg\a2a\enums.go ---
+// pkg/a2a/enums.go
+package a2a
+
+// TaskState represents the different states a task can be in.
+type TaskState string
+
+const (
+	TaskStateSubmitted    TaskState = "submitted"
+	TaskStateWorking      TaskState = "working"
+	TaskStateInputRequired TaskState = "input-required"
+	TaskStateCompleted    TaskState = "completed"
+	TaskStateCanceled     TaskState = "canceled"
+	TaskStateFailed       TaskState = "failed"
+	TaskStateUnknown      TaskState = "unknown" // Good practice for potential future states or errors
+)
+--- END OF FILE: pkg\a2a\enums.go ---
+
+--- START OF FILE: pkg\a2a\errors.go ---
+// pkg/a2a/errors.go
+package a2a
+
+import "fmt"
+
+// Standard JSON-RPC Error Codes
+const (
+	CodeParseError          = -32700
+	CodeInvalidRequest      = -32600
+	CodeMethodNotFound      = -32601
+	CodeInvalidParams       = -32602
+	CodeInternalError       = -32603
+	// -32000 to -32099 are reserved for implementation-defined server-errors.
+	CodeTaskNotFound                = -32001
+	CodeTaskNotCancelable           = -32002
+	CodePushNotificationNotSupported = -32003
+	CodeUnsupportedOperation         = -32004
+)
+
+// --- Predefined Error Structures (matching schema) ---
+// These can be useful for generating consistent error responses.
+
+func NewJSONRPCError(code int, message string, data any) *JSONRPCError {
+	return &JSONRPCError{Code: code, Message: message, Data: data}
+}
+
+func NewParseError(data any) *JSONRPCError {
+	return NewJSONRPCError(CodeParseError, "Invalid JSON payload", data)
+}
+
+func NewInvalidRequestError(data any) *JSONRPCError {
+	return NewJSONRPCError(CodeInvalidRequest, "Request payload validation error", data)
+}
+
+func NewMethodNotFoundError(data any) *JSONRPCError {
+	return NewJSONRPCError(CodeMethodNotFound, "Method not found", data) // Spec says data should be null, but we allow flexibility
+}
+
+func NewInvalidParamsError(data any) *JSONRPCError {
+	return NewJSONRPCError(CodeInvalidParams, "Invalid parameters", data)
+}
+
+func NewInternalError(data any) *JSONRPCError {
+	return NewJSONRPCError(CodeInternalError, "Internal error", data)
+}
+
+// --- A2A Specific Errors ---
+
+func NewTaskNotFoundError(taskId string) *JSONRPCError {
+	return NewJSONRPCError(CodeTaskNotFound, "Task not found", map[string]string{"taskId": taskId}) // Add task ID to data
+}
+
+func NewTaskNotCancelableError(taskId string) *JSONRPCError {
+	return NewJSONRPCError(CodeTaskNotCancelable, "Task cannot be canceled", map[string]string{"taskId": taskId})
+}
+
+func NewPushNotificationNotSupportedError() *JSONRPCError {
+	return NewJSONRPCError(CodePushNotificationNotSupported, "Push Notification is not supported", nil)
+}
+
+func NewUnsupportedOperationError(operation string) *JSONRPCError {
+	return NewJSONRPCError(CodeUnsupportedOperation, "This operation is not supported", map[string]string{"operation": operation})
+}
+
+// Error makes JSONRPCError satisfy the error interface
+func (e *JSONRPCError) Error() string {
+	return fmt.Sprintf("jsonrpc error %d: %s", e.Code, e.Message)
+}
+--- END OF FILE: pkg\a2a\errors.go ---
+
+--- START OF FILE: pkg\a2a\events.go ---
+// pkg/a2a/events.go
+package a2a
+
+// TaskStatusUpdateEvent is sent during streaming to notify of task status changes.
+type TaskStatusUpdateEvent struct {
+	ID       string         `json:"id"`      // Task ID
+	Status   TaskStatus     `json:"status"`  // The new status
+	Final    bool           `json:"final"`   // Indicates if this is the terminal status update
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+// TaskArtifactUpdateEvent is sent during streaming when a new artifact or chunk is ready.
+type TaskArtifactUpdateEvent struct {
+	ID       string         `json:"id"`       // Task ID
+	Artifact Artifact       `json:"artifact"` // The artifact data (or chunk)
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+--- END OF FILE: pkg\a2a\events.go ---
+
+--- START OF FILE: pkg\a2a\jsonrpc_base.go ---
+// pkg/a2a/jsonrpc_base.go
+package a2a
+
+// JSONRPCMessage is the base for requests and responses.
+type JSONRPCMessage struct {
+	JSONRPC string `json:"jsonrpc"` // Should be "2.0"
+	// ID can be string, number, or null. interface{} handles this.
+	// Use pointers (*string, *int) if stricter typing is desired, but interface{} is common.
+	ID interface{} `json:"id,omitempty"`
+}
+
+// JSONRPCRequest represents a generic JSON-RPC request.
+type JSONRPCRequest struct {
+	JSONRPCMessage           // Embed base fields (jsonrpc, id)
+	Method         string    `json:"method"`
+	Params         any       `json:"params,omitempty"` // Use 'any' (interface{}) as params structure varies
+}
+
+// JSONRPCError represents the error object in a JSON-RPC response.
+type JSONRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"` // Can be anything or null
+}
+
+// JSONRPCResponse represents a generic JSON-RPC response.
+type JSONRPCResponse struct {
+	JSONRPCMessage           // Embed base fields (jsonrpc, id)
+	Result         any       `json:"result,omitempty"` // Use 'any' as result structure varies
+	Error          *JSONRPCError `json:"error,omitempty"`  // Pointer, as it's absent on success
+}
+--- END OF FILE: pkg\a2a\jsonrpc_base.go ---
+
+--- START OF FILE: pkg\a2a\requests.go ---
+// pkg/a2a/requests.go
+package a2a
+
+// --- Parameter Structs ---
+
+// TaskIdParams is used for requests targeting a specific task ID.
+type TaskIdParams struct {
+	ID       string         `json:"id"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+// TaskQueryParams includes parameters for querying task details.
+type TaskQueryParams struct {
+	ID            string         `json:"id"`
+	HistoryLength *int           `json:"historyLength,omitempty"` // Pointer for optional int
+	Metadata      map[string]any `json:"metadata,omitempty"`
+}
+
+// TaskSendParams holds parameters for sending a message to a task.
+type TaskSendParams struct {
+	ID               string                  `json:"id"`       // Task ID
+	SessionID        *string                 `json:"sessionId,omitempty"` // Optional session ID
+	Message          Message                 `json:"message"`  // The message being sent (required)
+	PushNotification *PushNotificationConfig `json:"pushNotification,omitempty"` // Optional push config for this message
+	HistoryLength    *int                    `json:"historyLength,omitempty"` // Optional override for history length in response
+	Metadata         map[string]any          `json:"metadata,omitempty"`
+}
+
+
+// --- Request Structs ---
+// Each request struct embeds JSONRPCRequest and specifies its Params type.
+
+// SendTaskRequest initiates or continues a task with a message.
+type SendTaskRequest struct {
+	JSONRPCMessage
+	Method string         `json:"method"` // Should be MethodSendTask
+	Params TaskSendParams `json:"params"`
+}
+
+// SendTaskStreamingRequest initiates or continues a task and subscribes to updates.
+type SendTaskStreamingRequest struct {
+	JSONRPCMessage
+	Method string         `json:"method"` // Should be MethodSendTaskSubscribe
+	Params TaskSendParams `json:"params"`
+}
+
+// GetTaskRequest retrieves the current state of a task.
+type GetTaskRequest struct {
+	JSONRPCMessage
+	Method string          `json:"method"` // Should be MethodGetTask
+	Params TaskQueryParams `json:"params"`
+}
+
+// CancelTaskRequest requests the cancellation of a task.
+type CancelTaskRequest struct {
+	JSONRPCMessage
+	Method string         `json:"method"` // Should be MethodCancelTask
+	Params TaskIdParams   `json:"params"`
+}
+
+// TaskResubscriptionRequest re-subscribes to updates for an existing task stream.
+type TaskResubscriptionRequest struct {
+	JSONRPCMessage
+	Method string          `json:"method"` // Should be MethodResubscribeTask
+	Params TaskQueryParams `json:"params"`
+}
+
+// SetTaskPushNotificationRequest sets the push notification config for a task.
+type SetTaskPushNotificationRequest struct {
+	JSONRPCMessage
+	Method string `json:"method"` // Should be MethodSetTaskPushNotification
+	// Params field directly uses TaskPushNotificationConfig according to schema
+	Params TaskPushNotificationConfig `json:"params"`
+}
+
+// GetTaskPushNotificationRequest retrieves the push notification config for a task.
+type GetTaskPushNotificationRequest struct {
+	JSONRPCMessage
+	Method string       `json:"method"` // Should be MethodGetTaskPushNotification
+	Params TaskIdParams `json:"params"`
+}
+
+// Note: A2ARequest from the schema (oneOf various requests) is not directly
+// represented as a single Go struct. Decoding logic will typically unmarshal
+// into JSONRPCRequest first, then switch on the Method field to determine
+// the specific request type and unmarshal the Params accordingly.
+--- END OF FILE: pkg\a2a\requests.go ---
+
+--- START OF FILE: pkg\a2a\responses.go ---
+// pkg/a2a/responses.go
+package a2a
+
+// Base response structure is JSONRPCResponse
+
+// SendTaskResponse is the response to a SendTaskRequest.
+type SendTaskResponse struct {
+	JSONRPCMessage
+	Result *Task         `json:"result,omitempty"` // Pointer because it can be null on error
+	Error  *JSONRPCError `json:"error,omitempty"`
+}
+
+// GetTaskResponse is the response to a GetTaskRequest.
+type GetTaskResponse struct {
+	JSONRPCMessage
+	Result *Task         `json:"result,omitempty"`
+	Error  *JSONRPCError `json:"error,omitempty"`
+}
+
+// CancelTaskResponse is the response to a CancelTaskRequest.
+type CancelTaskResponse struct {
+	JSONRPCMessage
+	Result *Task         `json:"result,omitempty"` // Returns the task state after cancellation attempt
+	Error  *JSONRPCError `json:"error,omitempty"`
+}
+
+// SetTaskPushNotificationResponse is the response to SetTaskPushNotificationRequest.
+type SetTaskPushNotificationResponse struct {
+	JSONRPCMessage
+	Result *TaskPushNotificationConfig `json:"result,omitempty"` // Returns the config that was set
+	Error  *JSONRPCError               `json:"error,omitempty"`
+}
+
+// GetTaskPushNotificationResponse is the response to GetTaskPushNotificationRequest.
+type GetTaskPushNotificationResponse struct {
+	JSONRPCMessage
+	Result *TaskPushNotificationConfig `json:"result,omitempty"`
+	Error  *JSONRPCError               `json:"error,omitempty"`
+}
+
+// SendTaskStreamingResponse represents messages sent *from* the server *to* the client
+// over a WebSocket connection established by SendTaskStreamingRequest or TaskResubscriptionRequest.
+// Note: This is NOT a direct reply to the initial HTTP/WS upgrade request, but subsequent messages.
+// The Result can be a TaskStatusUpdateEvent or TaskArtifactUpdateEvent.
+type SendTaskStreamingResponse struct {
+	JSONRPCMessage // Often notifications might omit ID, but spec allows it
+	Result any           `json:"result,omitempty"` // Use any for TaskStatusUpdateEvent or TaskArtifactUpdateEvent
+	Error  *JSONRPCError `json:"error,omitempty"`  // For streaming errors related to the subscription
+}
+--- END OF FILE: pkg\a2a\responses.go ---
+
+--- START OF FILE: pkg\a2a\schema_types.go ---
+// pkg/a2a/schema_types.go
+package a2a
+
+import "time"
+
+// --- Agent Definition Types ---
+
+// AgentProvider describes the provider of the agent.
+type AgentProvider struct {
+	Organization string  `json:"organization"`
+	URL          *string `json:"url,omitempty"` // Optional field, use pointer
+}
+
+// AgentCapabilities describes the features supported by the agent.
+type AgentCapabilities struct {
+	Streaming             bool `json:"streaming,omitempty"` // Default is false
+	PushNotifications     bool `json:"pushNotifications,omitempty"` // Default is false
+	StateTransitionHistory bool `json:"stateTransitionHistory,omitempty"` // Default is false
+}
+
+// AgentAuthentication describes the authentication methods supported or required by the agent.
+type AgentAuthentication struct {
+	Schemes     []string `json:"schemes"`               // Required
+	Credentials *string  `json:"credentials,omitempty"` // Optional credential info/placeholder
+}
+
+// AgentSkill describes a specific capability or function of the agent.
+type AgentSkill struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description *string  `json:"description,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	Examples    []string `json:"examples,omitempty"`
+	InputModes  []string `json:"inputModes,omitempty"`  // Null or array -> slice
+	OutputModes []string `json:"outputModes,omitempty"` // Null or array -> slice
+}
+
+// AgentCard is the main description of an agent.
+type AgentCard struct {
+	Name               string               `json:"name"`
+	Description        *string              `json:"description,omitempty"`
+	URL                string               `json:"url"` // Agent's endpoint URL
+	Provider           *AgentProvider       `json:"provider,omitempty"`
+	Version            string               `json:"version"`
+	DocumentationURL   *string              `json:"documentationUrl,omitempty"`
+	Capabilities       AgentCapabilities    `json:"capabilities"` // Required, struct is not nullable
+	Authentication     *AgentAuthentication `json:"authentication,omitempty"`
+	DefaultInputModes  []string             `json:"defaultInputModes,omitempty"` // Default handled by consumer if empty
+	DefaultOutputModes []string             `json:"defaultOutputModes,omitempty"` // Default handled by consumer if empty
+	Skills             []AgentSkill         `json:"skills"`                     // Required
+}
+
+// --- Message and Content Types ---
+
+// FileContent represents file data, either inline or via URI.
+// Validation should ensure only one of Bytes or URI is set.
+type FileContent struct {
+	Name     *string `json:"name,omitempty"`
+	MimeType *string `json:"mimeType,omitempty"`
+	Bytes    *string `json:"bytes,omitempty"` // Base64 encoded string
+	URI      *string `json:"uri,omitempty"`
+}
+
+// Base interface for Message Parts (used for type checking/switching).
+// We use map[string]interface{} for Parts within Message/Artifact
+// due to the complexity of marshalling/unmarshalling 'anyOf'.
+// Actual decoding will require checking the "type" field.
+// type Part interface { isPart() } // Marker interface (optional)
+
+// TextPart represents a text segment of a message.
+type TextPart struct {
+	Type     string         `json:"type"` // Should be PartTypeText ("text")
+	Text     string         `json:"text"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+	// func (TextPart) isPart() {} // Implement marker interface (optional)
+}
+
+// FilePart represents a file segment of a message.
+type FilePart struct {
+	Type     string         `json:"type"` // Should be PartTypeFile ("file")
+	File     FileContent    `json:"file"` // Struct, required
+	Metadata map[string]any `json:"metadata,omitempty"`
+	// func (FilePart) isPart() {} // Implement marker interface (optional)
+}
+
+// DataPart represents a structured data segment of a message.
+type DataPart struct {
+	Type     string         `json:"type"` // Should be PartTypeData ("data")
+	Data     map[string]any `json:"data"` // Required
+	Metadata map[string]any `json:"metadata,omitempty"`
+	// func (DataPart) isPart() {} // Implement marker interface (optional)
+}
+
+// Message represents a single message in a task conversation.
+type Message struct {
+	Role  string `json:"role"` // Required ("user" or "agent")
+	// Parts uses interface{} because marshalling requires checking the 'type' field.
+	// During unmarshalling, decode into []map[string]interface{}, check 'type',
+	// then unmarshal the map into the specific Part struct (TextPart, FilePart, DataPart).
+	Parts    []any          `json:"parts"` // Required. Use []any or []map[string]any.
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+// Artifact represents a potentially large or structured output from a task.
+type Artifact struct {
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+	// Parts uses interface{} for the same reason as Message.Parts
+	Parts     []any          `json:"parts"` // Required. Use []any or []map[string]any.
+	Index     int            `json:"index,omitempty"`      // Default 0
+	Append    *bool          `json:"append,omitempty"`     // Optional bool
+	LastChunk *bool          `json:"lastChunk,omitempty"`  // Optional bool for streaming artifacts
+	Metadata  map[string]any `json:"metadata,omitempty"`
+}
+
+// --- Task Related Types ---
+
+// TaskStatus represents the current status of a task.
+type TaskStatus struct {
+	State     TaskState  `json:"state"`               // Required
+	Message   *Message   `json:"message,omitempty"`   // Optional message associated with the status
+	Timestamp *time.Time `json:"timestamp,omitempty"` // Use pointer for optional timestamp
+}
+
+// Task represents the state of an ongoing or completed task.
+type Task struct {
+	ID        string     `json:"id"`
+	SessionID *string    `json:"sessionId,omitempty"`
+	Status    TaskStatus `json:"status"` // Required
+	// Artifacts can be null or an array
+	Artifacts []Artifact     `json:"artifacts,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+}
+
+// --- Push Notification Types ---
+
+// AuthenticationInfo used within PushNotificationConfig.
+type AuthenticationInfo struct {
+	Schemes     []string       `json:"schemes"`               // Required
+	Credentials *string        `json:"credentials,omitempty"` // Optional
+	// Note: The schema has `additionalProperties: {}`, implying potential extra fields.
+	// If needed, add: Extra map[string]interface{} `json:"-"` and handle custom marshal/unmarshal.
+}
+
+// PushNotificationConfig describes how the agent should send push notifications.
+type PushNotificationConfig struct {
+	URL            string              `json:"url"` // Required
+	Token          *string             `json:"token,omitempty"`
+	Authentication *AuthenticationInfo `json:"authentication,omitempty"`
+}
+
+// TaskPushNotificationConfig associates a PushNotificationConfig with a Task ID.
+// Used specifically in the get/set push notification responses.
+type TaskPushNotificationConfig struct {
+	ID                     string                 `json:"id"` // Task ID
+	PushNotificationConfig PushNotificationConfig `json:"pushNotificationConfig"`
+}
+--- END OF FILE: pkg\a2a\schema_types.go ---

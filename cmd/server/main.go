@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors" // Required for checking ErrAlreadyExists
 	"fmt"
 	"net/http"
 	"os"
@@ -10,20 +11,20 @@ import (
 	"strings" // Needed for initializeLLMClients
 	"syscall"
 	"time"
-	"errors"
 
 	"github.com/kathir-ks/a2a-platform/internal/agentruntime"
 	"github.com/kathir-ks/a2a-platform/internal/api"
 	"github.com/kathir-ks/a2a-platform/internal/app"
 	"github.com/kathir-ks/a2a-platform/internal/config"
 	"github.com/kathir-ks/a2a-platform/internal/llmclient"
+	memRepo "github.com/kathir-ks/a2a-platform/internal/repository/memory" // Alias memory repo
 	// Import repository interfaces IF needed directly, usually not needed here
 	// "github.com/kathir-ks/a2a-platform/internal/repository"
-	"github.com/kathir-ks/a2a-platform/internal/repository/memory" // Import memory repo implementation
 	// "github.com/kathir-ks/a2a-platform/internal/repository/sql" // Or SQL implementation
 	"github.com/kathir-ks/a2a-platform/internal/tools"
 	"github.com/kathir-ks/a2a-platform/internal/tools/examples" // Import for CalculatorTool struct
 	"github.com/kathir-ks/a2a-platform/internal/ws"             // Import WS manager
+	"github.com/kathir-ks/a2a-platform/pkg/a2a"                 // Import A2A types for example agents
 
 	log "github.com/sirupsen/logrus"
 )
@@ -41,9 +42,9 @@ func main() {
 
 	// --- Database & Repositories ---
 	log.Info("Using IN-MEMORY repositories (Data will be lost on shutdown)")
-	taskRepo := memory.NewMemoryTaskRepository()
-	agentRepo := memory.NewMemoryAgentRepository()
-	toolRepo := memory.NewMemoryToolRepository()
+	taskRepo := memRepo.NewMemoryTaskRepository()
+	agentRepo := memRepo.NewMemoryAgentRepository()
+	toolRepo := memRepo.NewMemoryToolRepository()
 	// db := setupDatabase(cfg.DatabaseURL) // For SQL
 	// taskRepo := sql.NewSQLTaskRepository(db) // For SQL
 	// agentRepo := sql.NewMemoryAgentRepository(db) // For SQL
@@ -76,6 +77,10 @@ func main() {
 	if err := toolRegistry.Register(context.Background(), &examples.CalculatorTool{}); err != nil {
 		log.Errorf("Failed to register Calculator tool: %v", err)
 	}
+	// Register example web search tool (if it exists - placeholder)
+	// if err := toolRegistry.Register(context.Background(), &examples.WebSearchTool{}); err != nil {
+	// 	log.Errorf("Failed to register WebSearch tool: %v", err)
+	// }
 
 	// --- Application Services ---
 	// Create dependency structs (ensure these structs are defined in internal/app/interfaces.go)
@@ -102,6 +107,9 @@ func main() {
 	// Pass the specific services the WS manager needs
 	wsManager := ws.NewConnectionManager(platformService, taskService)
 
+	// --- Register Example Agents (if repo is empty) ---
+	registerExampleAgents(context.Background(), agentService)
+
 	// --- API Router ---
 	// Pass all services and the WS manager to the router
 	// Ensure api.NewRouter signature matches these arguments
@@ -112,13 +120,13 @@ func main() {
 		toolService,     // 4th: ToolService
 		wsManager,       // 5th: ws.Manager
 	)
-	
+
 	// --- HTTP Server ---
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.HTTPPort),
-		Handler:      router,                     // Use the configured router
-		ReadTimeout:  15 * time.Second,           // Slightly longer read timeout
-		WriteTimeout: 15 * time.Second,           // Slightly longer write timeout
+		Handler:      router,           // Use the configured router
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 
@@ -208,6 +216,12 @@ func initializeLLMClients(cfg *config.Config) []llmclient.Client {
 			// client, err = llmclient.NewAnthropicClient(providerCfg.APIKey) // Placeholder
 			log.Warn("Anthropic client not implemented yet")
 			// if err != nil { log.Errorf(...) }
+		case "google":
+			client, err = llmclient.NewGeminiClient(providerCfg.APIKey)
+			if err != nil {
+				log.Errorf("Failed to create Google Gemini client: %v", err)
+			}
+			// if err != nil { log.Errorf(...) }
 		// Add cases for other providers (google, cohere, etc.)
 		default:
 			log.Warnf("Unsupported LLM provider configured: %s", providerName)
@@ -225,5 +239,65 @@ func initializeLLMClients(cfg *config.Config) []llmclient.Client {
 // func setupDatabase(dbURL string) *sql.DB { ... }
 // func closeDatabase(db *sql.DB) { ... }
 
-// --- Error import for shutdown checking ---
-// import "errors" // Ensure errors package is imported
+// registerExampleAgents adds some predefined agents if the repository is empty.
+func registerExampleAgents(ctx context.Context, agentSvc app.AgentService) {
+	log.Info("Checking for existing agents...")
+	// Quick check - ideally AgentService would have List or Count method
+	// For now, just try registering and ignore 'AlreadyExists' errors
+
+	descEcho := "A simple agent that echoes back the input message."
+	echoAgent := a2a.AgentCard{
+		Name:        "EchoAgent",
+		Description: &descEcho,
+		URL:         "http://localhost:8081/a2a/agents/echo", // Dummy URL for example
+		Version:     "1.0.0",
+		Capabilities: a2a.AgentCapabilities{
+			Streaming:             false,
+			PushNotifications:     false,
+			StateTransitionHistory: false,
+		},
+		Skills: []a2a.AgentSkill{
+			{ID: "echo-text", Name: "Echo Text", Description: &descEcho},
+		},
+	}
+
+	descCalc := "An agent capable of performing calculations using the platform's calculator tool."
+	calculatorAgent := a2a.AgentCard{
+		Name:        "CalculatorAgent",
+		Description: &descCalc,
+		URL:         "http://localhost:8081/a2a/agents/calculator", // Dummy URL
+		Version:     "1.0.0",
+		Capabilities: a2a.AgentCapabilities{
+			Streaming:             false,
+			PushNotifications:     false,
+			StateTransitionHistory: false,
+		},
+		Skills: []a2a.AgentSkill{
+			{
+				ID:          "basic-math",
+				Name:        "Basic Math",
+				Description: ptrString("Performs addition, subtraction, multiplication, division."),
+				Examples:    []string{"add 1 and 2", "what is 10 divided by 5?"},
+			},
+		},
+	}
+
+	agentsToRegister := []a2a.AgentCard{echoAgent, calculatorAgent}
+
+	registeredCount := 0
+	for _, card := range agentsToRegister {
+		_, err := agentSvc.RegisterAgent(ctx, card)
+		if err != nil {
+			if errors.Is(err, memRepo.ErrAlreadyExists) {
+				log.Debugf("Example agent '%s' already registered.", card.Name)
+			} else {
+				log.Warnf("Failed to register example agent '%s': %v", card.Name, err)
+			}
+		} else {
+			log.Infof("Registered example agent: %s", card.Name)
+			registeredCount++
+		}
+	}
+}
+
+func ptrString(s string) *string { return &s }

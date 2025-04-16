@@ -1,13 +1,18 @@
-# config.yaml
-HTTP_PORT: 8081
-LOG_LEVEL: "debug"
-AGENT_CALL_TIMEOUT_SECONDS: 20
-DEFAULT_LLM_MODEL: "openai:gpt-4o" # Or "anthropic:claude-3-opus-20240229" etc.
-
-# LLM Provider configuration
-LLM_PROVIDERS:
-  openai:
-    # API_KEY: "sk-..." # RECOMMENDED: Set via environment variable (LLM_PROVIDERS_OPENAI_API_KEY) instead of file
-  anthropic:
-    # API_KEY: "ak-..." # RECOMMENDED: Set via environment variable (LLM_PROVIDERS_ANTHROPIC_API_KEY)
-# Add other providers like 'google', 'cohere' etc.
+ // START OF FILE: config.yml
+ # config.yaml
+ HTTP_PORT: 8081
+ LOG_LEVEL: "debug"
+ AGENT_CALL_TIMEOUT_SECONDS: 20
+-DEFAULT_LLM_MODEL: "openai:gpt-4o" # Or "anthropic:claude-3-opus-20240229" etc.
++DEFAULT_LLM_MODEL: "openai:gpt-4o" # Or "google:gemini-1.5-flash", "anthropic:claude-3-opus-20240229" etc.
+ 
+ # LLM Provider configuration
+ LLM_PROVIDERS:
+   openai:
+     # API_KEY: "sk-..." # RECOMMENDED: Set via environment variable (LLM_PROVIDERS_OPENAI_API_KEY) instead of file
++  google: # Add google provider section
++    # API_KEY: "AIza..." # RECOMMENDED: Set via environment variable (LLM_PROVIDERS_GOOGLE_API_KEY) instead of file
+   anthropic:
+     # API_KEY: "ak-..." # RECOMMENDED: Set via environment variable (LLM_PROVIDERS_ANTHROPIC_API_KEY)
+ # Add other providers like 'google', 'cohere' etc.
+ // END OF FILE: config.yml
