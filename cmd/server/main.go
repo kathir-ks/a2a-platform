@@ -81,11 +81,11 @@ func main() {
 	// if err := toolRegistry.Register(context.Background(), &examples.WebSearchTool{}); err != nil {
 	// 	log.Errorf("Failed to register WebSearch tool: %v", err)
 	// }
-
+	agentServiceDeps := app.AgentServiceDeps{AgentRepo: agentRepo}
+	agentService := app.NewAgentService(agentServiceDeps) // *** agentService DEFINED HERE ***
 	// --- Application Services ---
 	// Create dependency structs (ensure these structs are defined in internal/app/interfaces.go)
 	taskServiceDeps := app.TaskServiceDeps{TaskRepo: taskRepo}
-	agentServiceDeps := app.AgentServiceDeps{AgentRepo: agentRepo}
 	toolServiceDeps := app.ToolServiceDeps{
 		ToolRepo: toolRepo,     // Pass repo (can be nil if only runtime needed)
 		Registry: toolRegistry, // Pass registry
@@ -93,12 +93,11 @@ func main() {
 	platformServiceDeps := app.PlatformServiceDeps{
 		TaskSvc:    nil, // TaskService needs to be created first
 		AgentRtCli: agentRtClient,
-		// Add AgentService/ToolService here if PlatformService needs them
+		AgentSvc:   agentService, // Assign AgentService (should be non-nil)	// Add AgentService/ToolService here if PlatformService needs them
 	}
 
 	// Create services, injecting dependencies (ensure New... functions exist in internal/app/)
 	taskService := app.NewTaskService(taskServiceDeps)
-	agentService := app.NewAgentService(agentServiceDeps)
 	toolService := app.NewToolService(toolServiceDeps)
 	platformServiceDeps.TaskSvc = taskService // Inject TaskService dependency into PlatformService deps
 	platformService := app.NewPlatformService(platformServiceDeps)
@@ -265,7 +264,8 @@ func registerExampleAgents(ctx context.Context, agentSvc app.AgentService) {
 	calculatorAgent := a2a.AgentCard{
 		Name:        "CalculatorAgent",
 		Description: &descCalc,
-		URL:         "http://localhost:8081/a2a/agents/calculator", // Dummy URL
+		// URL:         "http://localhost:8081/a2a/agents/calculator", // Dummy URL
+		URL:         "http://localhost:9091/echo/a2a", // <-- CORRECT URL for the running agent
 		Version:     "1.0.0",
 		Capabilities: a2a.AgentCapabilities{
 			Streaming:             false,

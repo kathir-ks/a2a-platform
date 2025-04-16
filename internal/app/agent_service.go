@@ -16,6 +16,10 @@ type agentService struct {
 	repo repository.AgentRepository
 }
 
+func (s *agentService) ListAgents(ctx context.Context, limit, offset int) ([]*models.Agent, error) {
+	return s.repo.List(ctx, limit, offset) // Delegate to repository
+}
+
 // NewAgentService creates a new AgentService.
 func NewAgentService(deps AgentServiceDeps) AgentService {
 	if deps.AgentRepo == nil {

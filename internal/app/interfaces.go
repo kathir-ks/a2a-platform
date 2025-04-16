@@ -64,6 +64,7 @@ type AgentService interface {
 	RegisterAgent(ctx context.Context, card a2a.AgentCard) (*models.Agent, error)
 	GetAgent(ctx context.Context, agentID string) (*models.Agent, error)
 	GetAgentByURL(ctx context.Context, url string) (*models.Agent, error)
+	ListAgents(ctx context.Context, limit, offset int) ([]*models.Agent, error) // <-- ADD THIS
 	// ... other agent management methods (ListAgents, UpdateAgent, DeleteAgent)
 }
 
@@ -86,6 +87,7 @@ type TaskServiceDeps struct {
 type PlatformServiceDeps struct {
 	TaskSvc    TaskService // Depends on TaskService
 	AgentRtCli agentruntime.Client // Depends on the client to call external agents
+	AgentSvc   AgentService          // <-- *** ADD THIS LINE ***
     // May need AgentService later if more agent info is required during routing
 }
 
